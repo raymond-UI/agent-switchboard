@@ -129,6 +129,15 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "oc_steer",
+    description: "oc_steer(message): queue a follow-up correction on the busy OpenCode session (current run finishes first; no mid-turn interrupt). Returns immediately.",
+    inputSchema: {
+      type: "object",
+      properties: { message: { type: "string" } },
+      required: ["message"],
+    },
+  },
+  {
     name: "oc_abort",
     description: "oc_abort(): stop OpenCode's current run.",
     inputSchema: { type: "object", properties: {} },
@@ -261,6 +270,12 @@ async function handleToolCall(name, args) {
       case "oc_state": {
         const s = await oc.state();
         return okResult(JSON.stringify(s, null, 2));
+      }
+      case "oc_steer": {
+        const message = args?.message;
+        if (!message) return errResult("oc_steer requires a 'message' string.");
+        await oc.steer(message);
+        return okResult("Steer message queued (follow-up; current run finishes first).");
       }
       case "oc_abort": {
         await oc.abort();

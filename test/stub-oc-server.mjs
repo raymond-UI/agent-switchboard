@@ -25,7 +25,13 @@ function completeRun(sid, aborted = false) {
   const s = sessions.get(sid);
   if (!s || !s.run) return;
   s.run = null;
-  const text = aborted ? "(aborted)" : s.pendingText;
+  const finishedText = s.pendingText;
+  if (!aborted && s.queue && s.queue.length && MODE !== "hang") {
+    s.pendingText = s.queue.shift();
+    s.run = { started: Date.now() };
+    setTimeout(() => completeRun(sid), 120);
+  }
+  const text = aborted ? "(aborted)" : finishedText;
   const parts = [{ id: `p${++seq}`, sessionID: sid, messageID: `m${seq}`, type: "text", text }];
   if (MODE === "tooluse" && !aborted) {
     parts.push({ id: `p${++seq}`, sessionID: sid, messageID: `m${seq}`, type: "tool", callID: "c1", tool: "read", state: { status: "completed" } });
@@ -54,7 +60,7 @@ const server = http.createServer((req, res) => {
     }
     if (path === "/session" && req.method === "POST") {
       const id = `ses_stub${++seq}`;
-      sessions.set(id, { id, directory: json.directory || "/tmp", messages: [], run: null, pendingText: null });
+      sessions.set(id, { id, directory: json.directory || "/tmp", messages: [], run: null, pendingText: null, queue: [] });
       return sendJson(res, { data: { id, directory: json.directory || "/tmp", tokens: { input: 0, output: 0 }, cost: 0, title: "stub" } });
     }
     const m = path.match(/^\/session\/([^/]+)(\/.*)?$/);
@@ -77,9 +83,15 @@ const server = http.createServer((req, res) => {
     }
     if ((rest === "/prompt_async" || rest === "/message") && req.method === "POST") {
       const text = (json.parts || []).filter((p) => p.type === "text").map((p) => p.text).join("\n") || "(empty)";
-      s.pendingText = `stub-oc answer to: ${text}`;
-      s.run = { started: Date.now() };
-      if (MODE !== "hang") setTimeout(() => completeRun(sid), 250);
+      // Follow-up queue (mirrors live behavior): a prompt sent while busy
+      // waits; each completion emits session.idle.
+      if (s.run) {
+        s.queue.push(`stub-oc answer to: ${text}`);
+      } else {
+        s.pendingText = `stub-oc answer to: ${text}`;
+        s.run = { started: Date.now() };
+        if (MODE !== "hang") setTimeout(() => completeRun(sid), 250);
+      }
       return sendJson(res, { data: { id: `msg${++seq}` } });
     }
     if (rest === "/message" && req.method === "GET") {

@@ -43,7 +43,7 @@ in review by design.
 | `bridge/mcp-server.mjs` | MCP stdio server (18 tools): `pi_ask[_async]`, `pi_steer`, `pi_abort`, `pi_new_session`, `pi_state`, `oc_ask[_async]`, `oc_state`, `oc_abort`, `oc_new_session`, `agent_send`, `agent_sessions`, `agent_tickets`, `pi_inbox` |
 | `bridge/format.mjs` | Side-effect-free result formatting + `RESULT_CAP` spillover (importable in tests) |
 | `opencode-plugin/claude-bridge.ts` | OpenCode plugin (VERIFIED live): `message_claude` tool, presence heartbeat, `to-pi` watcher + SDK injection |
-| `bridge/oc-session.mjs` | OpenCode transport: owns `opencode serve` (port scan, per-spawn password), promptAsync + SSE `session.idle` settle, abort/state/new-session. No `oc_steer` v1 (mid-run prompt semantics unverified) |
+| `bridge/oc-session.mjs` | OpenCode transport: owns `opencode serve` (port scan, per-spawn password), promptAsync + SSE `session.idle` settle, abort/steer/state/new-session. `oc_steer` = queued follow-up (verified live: current run finishes first, no mid-turn interrupt — unlike pi's steer) |
 | `test/stub-oc-server.mjs` | Fixture HTTP+SSED server (`STUB_OC_MODE=happy\|hang\|tooluse`) |
 | `pi-extensions/claude-bridge.ts` | pi extension: `message_claude` tool + `/tell-claude` |
 | `hooks/pi-inbox.mjs` | Claude Code Stop hook delivering bus messages |

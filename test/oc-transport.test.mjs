@@ -65,6 +65,40 @@ describe("opencode transport", () => {
     await s.stop();
   });
 
+  it("steer queues a follow-up without breaking the wait", async () => {
+    const s = oc("hang");
+    const p = s.ask("long job", { timeoutMs: 900 });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(await s.steer("course correction"), true);
+    await assert.rejects(p, /timed out|failed/i);
+    await s.stop();
+  });
+
+  it("steer on idle starts a turn", async () => {
+    const s = oc();
+    assert.equal(await s.steer("first"), true);
+    await new Promise((r) => setTimeout(r, 800)); // let the stub turn settle
+    const msgs = await s.api(`/session/${await s.ensureSession()}/message`, {}, { timeoutMs: 5000 });
+    const texts = JSON.stringify(msgs);
+    assert.match(texts, /first/);
+    await s.stop();
+  });
+
+  it("queued follow-ups complete in order", async () => {
+    const s = oc();
+    const sid = await s.ensureSession();
+    const post = (t) => s.api(`/session/${sid}/prompt_async`, { method: "POST", body: { parts: [{ type: "text", text: t }] } }, { timeoutMs: 5000 });
+    await post("alpha");
+    await post("beta"); // lands while alpha runs -> queued
+    await new Promise((r) => setTimeout(r, 900));
+    const msgs = await s.api(`/session/${sid}/message`, {}, { timeoutMs: 5000 });
+    const texts = (msgs.data || []).flatMap((m) => (m.parts || []).filter((p) => p.type === "text").map((p) => p.text));
+    const ia = texts.findIndex((t) => t.includes("alpha"));
+    const ib = texts.findIndex((t) => t.includes("beta"));
+    assert.ok(ia >= 0 && ib > ia, `ordered answers, got: ${JSON.stringify(texts)}`);
+    await s.stop();
+  });
+
   it("state reports session info", async () => {
     const s = oc();
     await s.ask("hi", { timeoutMs: 10000 });

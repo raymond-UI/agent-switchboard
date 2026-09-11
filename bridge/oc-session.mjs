@@ -273,6 +273,20 @@ export class OcSession {
     };
   }
 
+  /**
+   * Queue a mid-run correction. Verified live: OpenCode treats a prompt
+   * sent while busy as a QUEUED FOLLOW-UP turn (the current run finishes
+   * first) — no mid-turn interrupt. Best-effort, returns immediately.
+   */
+  async steer(message) {
+    const sid = await this.ensureSession();
+    await this.api(`/session/${sid}/prompt_async`, {
+      method: "POST",
+      body: this.promptBody(message),
+    }, { timeoutMs: 15000 });
+    return true;
+  }
+
   async abort() {
     await this.ensureSession();
     try {

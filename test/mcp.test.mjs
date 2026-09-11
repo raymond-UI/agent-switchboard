@@ -46,7 +46,7 @@ describe("mcp server", () => {
     assert.equal(init.result.protocolVersion, "2024-11-05");
     const list = await rpc(proc, { method: "tools/list" }, 2);
     const names = list.result.tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ["agent_send", "agent_sessions", "agent_tickets", "oc_abort", "oc_ask", "oc_ask_async", "oc_new_session", "oc_state", "pi_abort", "pi_ask", "pi_ask_async", "pi_inbox", "pi_new_session", "pi_state", "pi_steer"]);
+    assert.deepEqual(names, ["agent_send", "agent_sessions", "agent_tickets", "oc_abort", "oc_ask", "oc_ask_async", "oc_new_session", "oc_state", "oc_steer", "pi_abort", "pi_ask", "pi_ask_async", "pi_inbox", "pi_new_session", "pi_state", "pi_steer"]);
     const state = await rpc(proc, { method: "tools/call", params: { name: "pi_state", arguments: {} } }, 3);
     assert.ok(state.result.content[0].text.includes("model"));
     const ask = await rpc(proc, { method: "tools/call", params: { name: "pi_ask", arguments: { message: "do /abs/path/task" } } }, 4);
