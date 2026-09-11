@@ -4,7 +4,7 @@
 
 import { PiSession } from "./pi-session.mjs";
 import { OcSession } from "./oc-session.mjs";
-import { resolveConfig, busInfoFile } from "./env.mjs";
+import { resolveConfig } from "./env.mjs";
 import { drainUnread, formatForClaude, writeBusInfo, appendToAgent, appendMessage, listPresence } from "./bus.mjs";
 import { capResult, formatAskResult } from "./format.mjs";
 import { randomUUID } from "node:crypto";
@@ -42,7 +42,6 @@ function launchTicket(agent, message, run) {
   );
   return id;
 }
-import fs from "node:fs";
 import path from "node:path";
 
 const config = resolveConfig();

@@ -8,10 +8,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 export class OcSession {
   constructor(opts = {}) {
     this.ocBin = opts.ocBin || process.env.OC_BIN || "opencode";

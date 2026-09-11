@@ -1,8 +1,18 @@
-# Agent Sync Layer (Claude Code ↔ pi)
+# Agent Sync Layer (Claude Code ↔ pi ↔ OpenCode)
 
-Local sync layer letting one Claude Code session and one pi session work the
-same codebase as peers, on one Mac. Claude is interactive; pi runs headless
-behind a bridge. See `PRD-agent-sync-layer.md` for the full PRD.
+Local sync layer letting Claude Code, pi, and OpenCode work the same
+codebase as peers, on one Mac. Claude Code is interactive; pi and OpenCode
+run headless behind one bridge process. Any pair can message each other;
+Claude can delegate blocking work to either worker. See
+`PRD-agent-sync-layer.md` for the original design doc.
+
+## Prerequisites
+
+- Node.js ≥ 18, zero npm dependencies (`npm test` just works)
+- [Claude Code](https://code.claude.com) CLI, [pi](https://pi.dev) CLI
+  (any, both, or either worker — the bridge degrades gracefully),
+  [OpenCode](https://opencode.ai) v1.18+ (for the `oc_*` tools)
+- Tested against: pi 0.85.0, OpenCode 1.18.30, Node 24 (CI: Node 20/22/24 × ubuntu/macos)
 
 ```
   human
@@ -30,7 +40,8 @@ in review by design.
 | `bridge/env.mjs` | Shared env contract (`AGENT_BUS`, `PI_CWD`, `PI_BIN`, …) |
 | `bridge/bus.mjs` | File bus: append / read / drain (`to-claude.jsonl`) |
 | `bridge/pi-session.mjs` | pi transport: spawns `pi --mode rpc`, LF framing, id correlation, settle tracking, dialog auto-cancel, telemetry |
-| `bridge/mcp-server.mjs` | MCP stdio server: `pi_ask`, `pi_steer`, `pi_abort`, `pi_new_session`, `agent_send`, `agent_sessions`, `pi_state`, `pi_inbox` |
+| `bridge/mcp-server.mjs` | MCP stdio server (18 tools): `pi_ask[_async]`, `pi_steer`, `pi_abort`, `pi_new_session`, `pi_state`, `oc_ask[_async]`, `oc_state`, `oc_abort`, `oc_new_session`, `agent_send`, `agent_sessions`, `agent_tickets`, `pi_inbox` |
+| `bridge/format.mjs` | Side-effect-free result formatting + `RESULT_CAP` spillover (importable in tests) |
 | `opencode-plugin/claude-bridge.ts` | OpenCode plugin (VERIFIED live): `message_claude` tool, presence heartbeat, `to-pi` watcher + SDK injection |
 | `bridge/oc-session.mjs` | OpenCode transport: owns `opencode serve` (port scan, per-spawn password), promptAsync + SSE `session.idle` settle, abort/state/new-session. No `oc_steer` v1 (mid-run prompt semantics unverified) |
 | `test/stub-oc-server.mjs` | Fixture HTTP+SSED server (`STUB_OC_MODE=happy\|hang\|tooluse`) |
@@ -124,6 +135,20 @@ Trust note: any local bus writer can inject prompts into a paired pi. Treat `AGE
 - OpenCode plugin VERIFIED live against 1.18.30 TUI: heartbeat presence, `message_claude` tool (PING from opencode arrived in `to-claude.jsonl`), watcher injection (PONG from Claude appeared in-session, claimed by all three live sessions incl. lazy-seeded pre-existing ones). Installed globally at `~/.config/opencode/plugins/claude-bridge.ts`.
 - Incident 2026-09-11: full-featured v1 blanked the OpenCode UI on every project (no log evidence). Bisect cleared heartbeat-only ✅ then +tool ✅ then +watcher ✅ — remaining suspect for the original breakage is the init-time `session.list()` await, which the shipped version does lazily instead. Full v1 kept in `opencode-plugin/claude-bridge.full.ts` for reference.
 - Lesson: `to: "*"` broadcasts wake EVERY paired session (each burns a turn). Address singly for real work.
+
+## Security
+
+- `AGENT_BUS` is a trusted path: any local writer can inject prompts into paired agents. Same bar as project files.
+- Bridge-owned servers bind `127.0.0.1` with per-spawn passwords. MCP is stdio, no auth by design (local only).
+- See CONTRIBUTING.md; do not weaken silently.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Stub-first, tests with every change (`npm test`).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ## Deferred (per PRD §10)
 

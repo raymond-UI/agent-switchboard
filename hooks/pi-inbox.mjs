@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveConfig, hookCounterFile, hookWarnedFile } from "../bridge/env.mjs";
-import { readUnread, drainUnread } from "../bridge/bus.mjs";
+import { readUnread, drainUnread, readBusInfo } from "../bridge/bus.mjs";
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -78,9 +78,8 @@ async function main() {
   // Split-bus detection (PRD 7.5): compare hook-resolved path to bridge's .bus-info.json.
   let mismatchNote = null;
   try {
-    const infoRaw = fs.readFileSync(path.join(agentBus, ".bus-info.json"), "utf8");
-    const info = JSON.parse(infoRaw);
-    if (info.busPath && path.resolve(info.busPath) !== path.resolve(agentBus)) {
+    const info = readBusInfo(agentBus);
+    if (info && info.busPath && path.resolve(info.busPath) !== path.resolve(agentBus)) {
       const key = `mismatch:${info.busPath}`;
       if (!alreadyWarned(agentBus, key)) {
         mismatchNote =
