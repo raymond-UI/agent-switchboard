@@ -1,0 +1,15 @@
+{
+  "name": "agent-sync-layer",
+  "version": "0.1.0",
+  "description": "Local sync layer: Claude Code <-> pi (MCP bridge, RPC transport, file bus, stop hook)",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "bin": {
+    "pi-bridge": "./bridge/mcp-server.mjs",
+    "pi-inbox": "./hooks/pi-inbox.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "MIT"
+}

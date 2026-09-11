@@ -1,0 +1,90 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SERVER = path.join(HERE, "..", "bridge", "mcp-server.mjs");
+const STUB = path.join(HERE, "stub-pi.mjs");
+
+function startServer(env) {
+  return spawn(process.execPath, [SERVER], {
+    env: { ...process.env, STUB_MODE: "happy", PI_BIN: process.execPath, PI_EXTRA_ARGS: STUB, PI_CWD: "/tmp", ...env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+}
+function rpc(proc, obj, id) {
+  return new Promise((resolve, reject) => {
+    let buf = "";
+    const timer = setTimeout(() => { proc.stdout.off("data", onData); reject(new Error("rpc timeout")); }, 15000);
+    if (typeof timer.unref === "function") timer.unref();
+    const onData = (chunk) => {
+      buf += chunk.toString();
+      const idx = buf.indexOf("\n");
+      if (idx !== -1) {
+        clearTimeout(timer);
+        proc.stdout.off("data", onData);
+        try { resolve(JSON.parse(buf.slice(0, idx))); } catch (e) { reject(e); }
+      }
+    };
+    proc.stdout.on("data", onData);
+    proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, ...obj }) + "\n");
+  });
+}
+
+describe("mcp server", () => {
+  it("initialize -> tools/list -> tools/call round-trips; stdout is clean", async () => {
+    const bus = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-"));
+    const proc = startServer({ AGENT_BUS: bus });
+    let stderr = "";
+    proc.stderr.on("data", (c) => (stderr += c.toString()));
+    const init = await rpc(proc, { method: "initialize", params: { protocolVersion: "2024-11-05" } }, 1);
+    assert.equal(init.result.protocolVersion, "2024-11-05");
+    const list = await rpc(proc, { method: "tools/list" }, 2);
+    const names = list.result.tools.map((t) => t.name).sort();
+    assert.deepEqual(names, ["agent_send", "agent_sessions", "oc_abort", "oc_ask", "oc_new_session", "oc_state", "pi_abort", "pi_ask", "pi_inbox", "pi_new_session", "pi_state", "pi_steer"]);
+    const state = await rpc(proc, { method: "tools/call", params: { name: "pi_state", arguments: {} } }, 3);
+    assert.ok(state.result.content[0].text.includes("model"));
+    const ask = await rpc(proc, { method: "tools/call", params: { name: "pi_ask", arguments: { message: "do /abs/path/task" } } }, 4);
+    assert.ok(!ask.result.isError, JSON.stringify(ask).slice(0, 300));
+    assert.match(ask.result.content[0].text, /stub answer/);
+    // stdout clean: every line so far was consumed as JSON; stderr got logs
+    assert.match(stderr, /pi-bridge/);
+    // notifications ignored
+    proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    // fresh session cycle: ask -> new session -> ask continues in the new one
+    const fresh = await rpc(proc, { method: "tools/call", params: { name: "pi_new_session", arguments: {} } }, 5);
+    assert.ok(!fresh.result.isError, JSON.stringify(fresh).slice(0, 200));
+    assert.match(fresh.result.content[0].text, /Fresh pi session/);
+    const ask2 = await rpc(proc, { method: "tools/call", params: { name: "pi_ask", arguments: { message: "follow-up in new session" } } }, 6);
+    assert.ok(!ask2.result.isError);
+    assert.match(ask2.result.content[0].text, /follow-up in new session/);
+    // agent_send queues to the agent bus; agent_sessions lists presence
+    const send = await rpc(proc, { method: "tools/call", params: { name: "agent_send", arguments: { message: "hello worker", to: "worker-1" } } }, 7);
+    assert.ok(!send.result.isError, JSON.stringify(send).slice(0, 200));
+    assert.match(send.result.content[0].text, /to=worker-1/);
+    const sess = await rpc(proc, { method: "tools/call", params: { name: "agent_sessions", arguments: {} } }, 8);
+    assert.ok(!sess.result.isError);
+    assert.match(sess.result.content[0].text, /no paired worker sessions/);
+    // tool error returns isError, not protocol error
+    const bad = await rpc(proc, { method: "tools/call", params: { name: "nope", arguments: {} } }, 9);
+    assert.equal(bad.result.isError, true);
+    proc.kill("SIGTERM");
+    await new Promise((r) => setTimeout(r, 500));
+  });
+
+  it("pi_ask against missing binary returns isError, server stays usable", async () => {
+    const bus = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-"));
+    const proc = startServer({ AGENT_BUS: bus, PI_BIN: "/nonexistent-pi-binary-xyz", PI_EXTRA_ARGS: "" });
+    await rpc(proc, { method: "initialize", params: {} }, 1);
+    const ask = await rpc(proc, { method: "tools/call", params: { name: "pi_ask", arguments: { message: "hi" } } }, 2);
+    assert.equal(ask.result.isError, true);
+    const list = await rpc(proc, { method: "tools/list" }, 3);
+    assert.ok(list.result.tools.length > 0);
+    proc.kill("SIGTERM");
+    await new Promise((r) => setTimeout(r, 500));
+  });
+});

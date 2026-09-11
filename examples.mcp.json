@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "pi-bridge": {
+      "command": "node",
+      "args": ["/abs/path/to/agent-sync/bridge/mcp-server.mjs"],
+      "env": {
+        "AGENT_BUS": "/abs/path/to/shared/.agentbus",
+        "PI_CWD": "/abs/path/to/project-pi",
+        "PI_NAME": "paired-with-claude-code",
+        "PI_ASK_TIMEOUT_MS": "900000"
+      }
+    }
+  }
+}
