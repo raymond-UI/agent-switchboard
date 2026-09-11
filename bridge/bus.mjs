@@ -12,6 +12,57 @@ const VALID_KINDS = new Set(["result", "question", "warning", "fyi"]);
 
 export function ensureBusDir(agentBus) {
   fs.mkdirSync(agentBus, { recursive: true });
+  ensureBusIgnored(agentBus);
+}
+
+// Auto-ignore the bus dir in the enclosing git repo (if any), so runtime
+// files (to-*.jsonl, presence, counters) never pollute git status. Idempotent,
+// silent unless it writes. Only acts when the bus lives inside a repo.
+export function ensureBusIgnored(agentBus) {
+  const rel = repoRelative(agentBus);
+  if (!rel) return false;
+  const root = rel.root;
+  const entry = rel.path.split(path.sep).join("/") + "/";
+  const ignoreFile = path.join(root, ".gitignore");
+  let existing = "";
+  try {
+    existing = fs.readFileSync(ignoreFile, "utf8");
+  } catch (err) {
+    if (err.code !== "ENOENT") return false;
+  }
+  const norm = (l) => l.trim().replace(/^\//, "").replace(/\/$/, "");
+  const want = norm(entry);
+  const covered = existing.split("\n").some((l) => {
+    const t = norm(l);
+    return t === want || t === want + "/**" || want.startsWith(t.replace(/\/\*\*$/, "") + "/") && t.endsWith("/**");
+  });
+  if (covered) return false;
+  const prefix = existing.length && !existing.endsWith("\n") ? "\n" : "";
+  const comment = "# agent switchboard bus (runtime, auto-added)\n";
+  const hasComment = existing.includes("agent switchboard bus");
+  try {
+    fs.writeFileSync(ignoreFile, existing + prefix + (hasComment ? "" : comment) + entry + "\n", "utf8");
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+// If dir lives inside a git repo, return {root, path} with path relative to
+// root. Otherwise null. Pure fs walk (no git CLI needed).
+export function repoRelative(dir) {
+  let cur = path.resolve(dir);
+  for (;;) {
+    try {
+      fs.statSync(path.join(cur, ".git"));
+      const rel = path.relative(cur, path.resolve(dir));
+      if (!rel || rel.startsWith("..")) return null; // degenerate: bus at/above root
+      return { root: cur, path: rel };
+    } catch {}
+    const parent = path.dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
 }
 
 export function appendMessage(agentBus, { text, kind = "fyi", paths = [], from = "pi", session = null, ticket = null, agent = null }) {

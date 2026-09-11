@@ -3,15 +3,41 @@
 
 import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, watch, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, watch, writeFileSync, statSync } from "node:fs";
+import { join, resolve, relative, dirname, sep } from "node:path";
 
 function busDir(): string {
   return process.env.AGENT_BUS || join(process.cwd(), ".agentbus");
 }
 
+function ensureBusIgnored(): void {
+  const bus = resolve(busDir());
+  let cur = bus;
+  for (;;) {
+    try {
+      statSync(join(cur, ".git"));
+      const rel = relative(cur, bus).split(sep).join("/");
+      if (!rel || rel.startsWith("..")) return;
+      const entry = rel + "/";
+      const file = join(cur, ".gitignore");
+      let existing = "";
+      try {
+        existing = readFileSync(file, "utf8");
+      } catch {}
+      const norm = (l: string) => l.trim().replace(/^\//, "").replace(/\/$/, "");
+      if (existing.split("\n").some((l) => norm(l) === norm(entry))) return;
+      writeFileSync(file, existing + (existing.length && !existing.endsWith("\n") ? "\n" : "") + entry + "\n", "utf8");
+      return;
+    } catch {}
+    const parent = dirname(cur);
+    if (parent === cur) return;
+    cur = parent;
+  }
+}
+
 function heartbeat(sessionID: string, directory: string): void {
   try {
+    ensureBusIgnored();
     const dir = join(busDir(), "presence");
     mkdirSync(dir, { recursive: true });
     writeFileSync(

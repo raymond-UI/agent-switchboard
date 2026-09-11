@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { appendMessage, readAll, readUnread, drainUnread, formatForClaude } from "../bridge/bus.mjs";
+import { appendMessage, readAll, readUnread, drainUnread, formatForClaude, ensureBusIgnored, repoRelative } from "../bridge/bus.mjs";
 
 function tmpBus() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "bus-"));
@@ -67,6 +67,28 @@ describe("bus", () => {
     const s = formatForClaude([{ kind: "warning", text: "careful", paths: ["/x.ts"], session: null }]);
     assert.match(s, /warning/);
     assert.match(s, /\/x\.ts/);
+  });
+
+  it("auto-ignores the bus dir in the enclosing repo", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "repo-"));
+    fs.mkdirSync(path.join(root, ".git"));
+    const bus = path.join(root, "work", ".agentbus");
+    assert.equal(ensureBusIgnored(bus), true);
+    const gi = fs.readFileSync(path.join(root, ".gitignore"), "utf8");
+    assert.match(gi, /work\/\.agentbus\//);
+    assert.equal(ensureBusIgnored(bus), false); // idempotent
+    assert.equal(fs.readFileSync(path.join(root, ".gitignore"), "utf8"), gi);
+  });
+
+  it("ignore skips dirs outside any repo and honors existing entries", () => {
+    const lone = fs.mkdtempSync(path.join(os.tmpdir(), "lone-"));
+    // lone temp dirs live outside a repo (unless TMPDIR itself is one)
+    const rel = repoRelative(path.join(lone, ".agentbus"));
+    if (!rel) assert.equal(ensureBusIgnored(path.join(lone, ".agentbus")), false);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "repo2-"));
+    fs.mkdirSync(path.join(root, ".git"));
+    fs.writeFileSync(path.join(root, ".gitignore"), ".agentbus/\n");
+    assert.equal(ensureBusIgnored(path.join(root, ".agentbus")), false);
   });
 
   it("U+2028 payloads survive JSONL", () => {

@@ -136,6 +136,13 @@ Trust note: any local bus writer can inject prompts into a paired pi. Treat `AGE
 - Incident 2026-09-11: full-featured v1 blanked the OpenCode UI on every project (no log evidence). Bisect cleared heartbeat-only ✅ then +tool ✅ then +watcher ✅ — remaining suspect for the original breakage is the init-time `session.list()` await, which the shipped version does lazily instead. Full v1 kept in `opencode-plugin/claude-bridge.full.ts` for reference.
 - Lesson: `to: "*"` broadcasts wake EVERY paired session (each burns a turn). Address singly for real work.
 
+## Housekeeping
+
+Every component that creates the bus dir also appends it to the enclosing
+git's `.gitignore` (repo-relative, idempotent, silent) — runtime files
+(`to-*.jsonl`, `presence/`, counters) never pollute `git status`. Nothing
+happens when the bus lives outside a repo.
+
 ## Security
 
 - `AGENT_BUS` is a trusted path: any local writer can inject prompts into paired agents. Same bar as project files.

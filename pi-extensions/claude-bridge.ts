@@ -4,8 +4,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, watch, writeFileSync, unlinkSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, watch, writeFileSync, unlinkSync, existsSync, statSync } from "node:fs";
+import { join, resolve, relative, dirname, sep } from "node:path";
 
 function busDir(): string {
   return (
@@ -248,11 +248,38 @@ export default function (pi: ExtensionAPI) {
     } catch {}
   }
 
+  // Keep bus runtime files out of git status in the enclosing repo (if any).
+  function ensureBusIgnored() {
+    const bus = resolve(busDir());
+    let cur = bus;
+    for (;;) {
+      try {
+        statSync(join(cur, ".git"));
+        const rel = relative(cur, bus).split(sep).join("/");
+        if (!rel || rel.startsWith("..")) return;
+        const entry = rel + "/";
+        const file = join(cur, ".gitignore");
+        let existing = "";
+        try {
+          existing = readFileSync(file, "utf8");
+        } catch {}
+        const norm = (l: string) => l.trim().replace(/^\//, "").replace(/\/$/, "");
+        if (existing.split("\n").some((l) => norm(l) === norm(entry))) return;
+        writeFileSync(file, existing + (existing.length && !existing.endsWith("\n") ? "\n" : "") + entry + "\n", "utf8");
+        return;
+      } catch {}
+      const parent = dirname(cur);
+      if (parent === cur) return;
+      cur = parent;
+    }
+  }
+
   // Background resources start here, never in the factory (per pi docs).
   pi.on("session_start", async (_event, ctx) => {
     try {
       mkdirSync(busDir(), { recursive: true });
     } catch {}
+    ensureBusIgnored();
     ctx.ui.setStatus("claude-bridge", "paired with Claude Code");
     myIds = myIdentity(ctx as unknown as { cwd: string; sessionManager: { getSessionFile(): string | null; getSessionId(): string } });
     myPrimaryId = myIds[0] || "";
