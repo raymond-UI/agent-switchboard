@@ -8,22 +8,23 @@ import path from "node:path";
 import { busFile } from "./env.mjs";
 
 const VALID_KINDS = new Set(["result", "question", "warning", "fyi"]);
-const VALID_FROM = new Set(["pi", "pi-user"]);
+// `from` is open-ended (pi, pi-user, opencode, claude) — routed, not validated.
 
 export function ensureBusDir(agentBus) {
   fs.mkdirSync(agentBus, { recursive: true });
 }
 
-export function appendMessage(agentBus, { text, kind = "fyi", paths = [], from = "pi", session = null }) {
+export function appendMessage(agentBus, { text, kind = "fyi", paths = [], from = "pi", session = null, ticket = null, agent = null }) {
   ensureBusDir(agentBus);
   if (!VALID_KINDS.has(kind)) kind = "fyi";
-  if (!VALID_FROM.has(from)) from = "pi";
   const record = {
     ts: new Date().toISOString(),
     from,
+    agent,
     kind,
     text: String(text ?? ""),
     session,
+    ticket,
     paths: Array.isArray(paths) ? paths : [],
     read: false,
   };
@@ -57,12 +58,19 @@ export function readUnread(agentBus) {
   return readAll(agentBus).filter((r) => r && r.read !== true);
 }
 
+export function keepConsumed(env = process.env) {
+  const n = parseInt(env.BUS_KEEP_CONSUMED || "200", 10);
+  return Number.isFinite(n) && n >= 0 ? n : 200;
+}
+
 /**
  * Drain unread messages. Marks read:true BEFORE returning (crash-after-emit
- * must not replay forever). Rewrites file in place.
- * Returns the unread records.
+ * must not replay forever). Compacts: drops consumed (read) records past a
+ * watermark (BUS_KEEP_CONSUMED, default 200 kept as audit trail) so the file
+ * can't grow forever. Early-exits without touching the file when nothing is
+ * unread. Returns the unread records.
  */
-export function drainUnread(agentBus) {
+export function drainUnread(agentBus, env = process.env) {
   const file = busFile(agentBus);
   let raw;
   try {
@@ -89,10 +97,16 @@ export function drainUnread(agentBus) {
   for (const rec of records) {
     if (rec && rec.read !== true) rec.read = true;
   }
-  const rewritten = records.map((r) => JSON.stringify(r)).join("\n") + "\n";
+  // Compact: keep all unread (just marked, none left) + newest consumed.
+  const keep = keepConsumed(env);
+  const consumed = records.filter((r) => r && r.read === true);
+  const kept = consumed.slice(-keep);
+  const keptSet = new Set(kept);
+  const rewritten = records.filter((r) => r.read !== true || keptSet.has(r));
+  const out = rewritten.map((r) => JSON.stringify(r)).join("\n") + (rewritten.length ? "\n" : "");
   // Best-effort atomic rewrite: write temp + rename.
   const tmp = file + ".tmp." + process.pid;
-  fs.writeFileSync(tmp, rewritten, "utf8");
+  fs.writeFileSync(tmp, out, "utf8");
   fs.renameSync(tmp, file);
   return unread;
 }
@@ -101,8 +115,10 @@ export function formatForClaude(records) {
   return records
     .map((r) => {
       const paths = r.paths && r.paths.length ? `\nFiles: ${r.paths.join(", ")}` : "";
-      const sess = r.session ? `\n(pi session: ${r.session})` : "";
-      return `[${r.kind}] ${r.text}${paths}${sess}`;
+      const sess = r.session ? `\n(worker session: ${r.session})` : "";
+      const ticket = r.ticket ? `\n(ticket: ${r.ticket})` : "";
+      const from = r.from && r.from !== "pi" ? `\n(from: ${r.from})` : "";
+      return `[${r.kind}] ${r.text}${paths}${sess}${ticket}${from}`;
     })
     .join("\n---\n");
 }
@@ -193,7 +209,7 @@ export function claimToPi(agentBus, recordId, myId) {
     throw err;
   }
   let claimed = false;
-  const lines = [];
+  const recs = [];
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -205,14 +221,21 @@ export function claimToPi(agentBus, recordId, myId) {
           claimed = true;
         }
       }
-      lines.push(JSON.stringify(rec));
+      recs.push(rec);
     } catch {
       // drop malformed on rewrite (consistent with drain)
     }
   }
   if (claimed) {
+    // Compact: drop consumed (delivered) records past the watermark, never
+    // drop undelivered ones (a paired session may not have polled yet).
+    const keep = keepConsumed();
+    const live = new Set(recs.filter((r) => !r || !Array.isArray(r.deliveredTo) || r.deliveredTo.length === 0));
+    const consumed = recs.filter((r) => r && Array.isArray(r.deliveredTo) && r.deliveredTo.length > 0);
+    const kept = new Set(consumed.slice(-keep));
+    const lines = recs.filter((r) => live.has(r) || kept.has(r)).map((r) => JSON.stringify(r));
     const tmp = file + ".tmp." + process.pid;
-    fs.writeFileSync(tmp, lines.join("\n") + "\n", "utf8");
+    fs.writeFileSync(tmp, lines.join("\n") + (lines.length ? "\n" : ""), "utf8");
     fs.renameSync(tmp, file);
   }
   return claimed;

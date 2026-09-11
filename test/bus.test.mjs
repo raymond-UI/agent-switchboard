@@ -28,6 +28,28 @@ describe("bus", () => {
     assert.equal(readAll(b).length, 2);
   });
 
+  it("drain early-exits without rewriting when nothing is unread", () => {
+    const b = tmpBus();
+    appendMessage(b, { text: "m1" });
+    drainUnread(b);
+    const file = path.join(b, "to-claude.jsonl");
+    const before = fs.readFileSync(file, "utf8");
+    assert.deepEqual(drainUnread(b), []);
+    assert.equal(fs.readFileSync(file, "utf8"), before);
+  });
+
+  it("drain compacts consumed history past the watermark", () => {
+    const b = tmpBus();
+    for (let i = 0; i < 10; i++) appendMessage(b, { text: `m${i}` });
+    assert.equal(drainUnread(b, { BUS_KEEP_CONSUMED: "3" }).length, 10);
+    const rest = readAll(b);
+    assert.equal(rest.length, 3); // newest 3 kept as audit trail
+    assert.equal(rest[2].text, "m9");
+    appendMessage(b, { text: "fresh" });
+    assert.equal(drainUnread(b, { BUS_KEEP_CONSUMED: "3" }).length, 1);
+    assert.equal(readAll(b).length, 3);
+  });
+
   it("drain marks read before emit and is idempotent", () => {
     const b = tmpBus();
     appendMessage(b, { text: "m1" });

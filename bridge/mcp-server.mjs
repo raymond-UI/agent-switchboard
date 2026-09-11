@@ -5,7 +5,43 @@
 import { PiSession } from "./pi-session.mjs";
 import { OcSession } from "./oc-session.mjs";
 import { resolveConfig, busInfoFile } from "./env.mjs";
-import { drainUnread, formatForClaude, writeBusInfo, appendToAgent, listPresence } from "./bus.mjs";
+import { drainUnread, formatForClaude, writeBusInfo, appendToAgent, appendMessage, listPresence } from "./bus.mjs";
+import { capResult, formatAskResult } from "./format.mjs";
+import { randomUUID } from "node:crypto";
+
+// Async delegation tickets (P1): fire-and-forget runs whose results land on
+// the bus (kind=result, ticket=<id>) for pi_inbox/Stop-hook delivery.
+// In-memory: a bridge restart loses running tickets (posted results persist).
+const tickets = new Map(); // id -> {agent, status, startedTs, message}
+
+function launchTicket(agent, message, run) {
+  const id = `t-${randomUUID().slice(0, 8)}`;
+  tickets.set(id, { agent, status: "running", startedTs: new Date().toISOString(), message: String(message).slice(0, 200) });
+  run().then(
+    (r) => {
+      tickets.set(id, { ...tickets.get(id), status: "done" });
+      appendMessage(config.agentBus, {
+        text: `Ticket ${id} settled.\n\n${capResult(formatAskResult(r), config.agentBus)}`,
+        kind: "result",
+        from: agent,
+        agent,
+        ticket: id,
+        session: r.sessionFile || r.sessionId || null,
+      });
+    },
+    (err) => {
+      tickets.set(id, { ...tickets.get(id), status: "failed" });
+      appendMessage(config.agentBus, {
+        text: `Ticket ${id} failed: ${err.message}`,
+        kind: "warning",
+        from: agent,
+        agent,
+        ticket: id,
+      });
+    }
+  );
+  return id;
+}
 import fs from "node:fs";
 import path from "node:path";
 
@@ -41,14 +77,9 @@ function relativePathWarning(message) {
   return null;
 }
 
-const PI_ASK_DESCRIPTION = `Delegate a self-contained task to the paired pi agent (runs in ${config.piCwd}).
-
-pi CANNOT see this conversation. Instructions must be fully self-contained:
-- Use ABSOLUTE file paths (relative paths resolve against pi's dir, not Claude's).
-- State goal, constraints, done-criteria, and which files/folders pi owns.
-- Keep it focused; one task per call.
-
-This call BLOCKS for minutes (up to ${Math.round(config.askTimeoutMs / 60000)} min) until pi settles. Returns pi's final text + tool summary + notices. Follow-up pi_ask calls continue the SAME session (pi remembers). For a new task with clean context use pi_new_session first. For mid-run corrections use pi_steer; to stop use pi_abort. Delivery pi->Claude is async via the message bus (see pi_inbox).`;
+// One-line tool descriptions (details live in README): 12 tools ride on every
+// Claude turn, so each token here is a recurring tax.
+const PI_ASK_DESCRIPTION = `pi_ask(message): blocking delegate to paired pi (${config.piCwd}). Self-contained, ABSOLUTE paths (pi can't see this chat). Same session continues; pi_new_session for clean slate. Minutes. Details: README.`;
 
 const TOOLS = [
   {
@@ -62,7 +93,7 @@ const TOOLS = [
   },
   {
     name: "pi_steer",
-    description: "Queue a mid-run correction to pi while it is streaming. Returns immediately; pi picks it up after the current turn. No-op when pi is idle.",
+    description: "pi_steer(message): queue a mid-run correction (returns immediately; no-op when idle).",
     inputSchema: {
       type: "object",
       properties: { message: { type: "string" } },
@@ -71,24 +102,22 @@ const TOOLS = [
   },
   {
     name: "pi_abort",
-    description: "Abort pi's current run. Use on timeouts or wrong direction.",
+    description: "pi_abort(): stop pi's current run.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "pi_new_session",
-    description:
-      "Kill the current pi session and start a fresh one (clean context) for a new task. Previous history is dropped and cannot be recovered. Use when switching tasks or when the session is polluted. Ongoing runs are aborted first. Follow-ups via pi_ask continue the NEW session afterwards.",
+    description: "pi_new_session(): drop pi history, start clean for a new task (aborts runs). Unrecoverable.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "pi_state",
-    description: "pi model, streaming flag, message counts, token usage and context-window pressure (cost meter).",
+    description: "pi_state(): pi model/streaming/tokens/context pressure (cost meter).",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "oc_ask",
-    description:
-      "Delegate a self-contained task to the paired OpenCode worker (headless `opencode serve` owned by this bridge). OpenCode CANNOT see this conversation: use ABSOLUTE file paths, state goal/constraints/done-criteria. BLOCKS until the session goes idle. Follow-ups continue the SAME session; oc_new_session starts clean. Async messages to running workers (either harness) go via agent_send.",
+    description: "oc_ask(message): blocking delegate to paired OpenCode worker. Self-contained, ABSOLUTE paths. Same session continues; oc_new_session for clean slate. Minutes. Details: README.",
     inputSchema: {
       type: "object",
       properties: { message: { type: "string", description: "Self-contained task for OpenCode (absolute paths)." } },
@@ -97,34 +126,55 @@ const TOOLS = [
   },
   {
     name: "oc_state",
-    description: "OpenCode session id, directory, token usage and cost (the cost meter).",
+    description: "oc_state(): OpenCode session/tokens/cost.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "oc_abort",
-    description: "Abort OpenCode's current run.",
+    description: "oc_abort(): stop OpenCode's current run.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "oc_new_session",
-    description: "Drop the current OpenCode session (deleted server-side) and start clean for a new task. Previous history is unrecoverable.",
+    description: "oc_new_session(): drop OpenCode history, start clean. Unrecoverable.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "pi_ask_async",
+    description: "pi_ask_async(message): non-blocking pi delegate. Returns ticket id now; result lands in pi_inbox (ticket=...). Fan out N tasks, then collect. Lost if bridge restarts.",
+    inputSchema: {
+      type: "object",
+      properties: { message: { type: "string", description: "Self-contained task for pi (absolute paths)." } },
+      required: ["message"],
+    },
+  },
+  {
+    name: "oc_ask_async",
+    description: "oc_ask_async(message): non-blocking OpenCode delegate. Returns ticket id now; result lands in pi_inbox (ticket=...).",
+    inputSchema: {
+      type: "object",
+      properties: { message: { type: "string", description: "Self-contained task for OpenCode (absolute paths)." } },
+      required: ["message"],
+    },
+  },
+  {
+    name: "agent_tickets",
+    description: "agent_tickets(): list async ticket states (running/done/failed). Results themselves arrive via pi_inbox.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "pi_inbox",
-    description: "Return and mark-read unread bus messages pi pushed (results/questions/warnings). Poll when idle; Stop hook also delivers them.",
+    description: "pi_inbox(): read bus messages pushed by workers (also via Stop hook).",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "agent_sessions",
-    description:
-      "List running pi sessions paired via the message bus (session id, file, cwd, alive). Use to discover the `to` address for agent_send. Only sessions with a bridge plugin/extension appear.",
+    description: "agent_sessions(): list paired workers (id/file/cwd/alive) for agent_send addressing.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "agent_send",
-    description:
-      "Send an async message to a RUNNING paired worker (pi or opencode you didn't start). Delivery is one-way and polled (~2s): the target injects it into its conversation. No reply comes back in this call — watch pi_inbox for its response. `to` is a session id, session file path, or cwd from agent_sessions (default \"*\" broadcasts to all paired sessions; prefer addressing one).",
+    description: "agent_send(message, to?): async message to a RUNNING worker (no reply here; watch pi_inbox). to = id/file/cwd from agent_sessions, default broadcasts.",
     inputSchema: {
       type: "object",
       properties: {
@@ -139,23 +189,9 @@ const TOOLS = [
 function okResult(text) {
   return { content: [{ type: "text", text }] };
 }
+
 function errResult(text) {
   return { content: [{ type: "text", text }], isError: true };
-}
-
-function formatAskResult(r) {
-  const parts = [];
-  parts.push(r.text || "(empty)");
-  parts.push("");
-  parts.push(`Tools used: ${r.toolsUsed.length ? r.toolsUsed.join(", ") : "(none)"}`);
-  if (r.tokens) parts.push(`Tokens: ${JSON.stringify(r.tokens)}`);
-  if (typeof r.cost !== "undefined" && r.cost !== null) parts.push(`Cost: ${r.cost}`);
-  if (r.contextUsage) parts.push(`Context: ${JSON.stringify(r.contextUsage)}`);
-  if (r.compactions) parts.push(`Compactions: ${r.compactions}`);
-  if (r.retries) parts.push(`Auto-retries: ${r.retries}`);
-  if (r.notices.length) parts.push(`Notices:\n- ${r.notices.join("\n- ")}`);
-  if (r.sessionFile) parts.push(`pi session: ${r.sessionFile}`);
-  return parts.join("\n");
 }
 
 async function handleToolCall(name, args) {
@@ -168,7 +204,7 @@ async function handleToolCall(name, args) {
         const warn = relativePathWarning(message);
         if (warn) log("[pi-bridge] WARN:", warn);
         const r = await pi.ask(message, { timeoutMs: config.askTimeoutMs });
-        let out = formatAskResult(r);
+        let out = capResult(formatAskResult(r), config.agentBus);
         if (warn) out += `\n\nWARNING: ${warn}`;
         return okResult(out);
       }
@@ -221,7 +257,7 @@ async function handleToolCall(name, args) {
         if (r.tokens) parts.push(`Tokens: ${JSON.stringify(r.tokens)}`);
         if (r.cost !== null && r.cost !== undefined) parts.push(`Cost: ${r.cost}`);
         if (r.sessionId) parts.push(`opencode session: ${r.sessionId}`);
-        return okResult(parts.join("\n"));
+        return okResult(capResult(parts.join("\n"), config.agentBus));
       }
       case "oc_state": {
         const s = await oc.state();
@@ -234,6 +270,28 @@ async function handleToolCall(name, args) {
       case "oc_new_session": {
         const r = await oc.newSession();
         return okResult(`Fresh OpenCode session started (id=${r.sessionId}). oc_ask now continues in the new session.`);
+      }
+      case "pi_ask_async": {
+        const message = args?.message;
+        if (!message || typeof message !== "string")
+          return errResult("pi_ask_async requires a 'message' string.");
+        const id = launchTicket("pi", message, () => pi.ask(message, { timeoutMs: config.askTimeoutMs }));
+        return okResult(`Ticket ${id} queued on pi. Result arrives via pi_inbox (ticket=${id}); check agent_tickets for state.`);
+      }
+      case "oc_ask_async": {
+        const message = args?.message;
+        if (!message || typeof message !== "string")
+          return errResult("oc_ask_async requires a 'message' string.");
+        const id = launchTicket("opencode", message, () => oc.ask(message, { timeoutMs: config.askTimeoutMs }));
+        return okResult(`Ticket ${id} queued on opencode. Result arrives via pi_inbox (ticket=${id}); check agent_tickets for state.`);
+      }
+      case "agent_tickets": {
+        if (!tickets.size) return okResult("(no tickets)");
+        return okResult(
+          [...tickets.entries()]
+            .map(([id, t]) => `- ${id} ${t.agent} ${t.status} started=${t.startedTs} msg=${t.message}`)
+            .join("\n")
+        );
       }
       case "agent_send": {
         const message = args?.message;
@@ -290,6 +348,25 @@ async function handleRequest(msg) {
         writeBusInfo(config.agentBus, { piCwd: config.piCwd });
       } catch (err) {
         log("[pi-bridge] WARN: cannot write .bus-info.json:", err.message);
+      }
+      // P3 warm pool: pre-spawn workers in the background (no prompt, no
+      // tokens) so the first ask doesn't pay spawn+model-load. Lazy path
+      // still covers failures. Disable with BRIDGE_WARMUP=0.
+      if (process.env.BRIDGE_WARMUP !== "0") {
+        (async () => {
+          try {
+            pi.ensureStarted();
+            log("[pi-bridge] pi warming up...");
+          } catch (err) {
+            log("[pi-bridge] pi warmup failed (lazy start still works):", err.message);
+          }
+          try {
+            await oc.ensureServe();
+            log("[pi-bridge] opencode serve warm");
+          } catch (err) {
+            log("[pi-bridge] opencode warmup failed (lazy start still works):", err.message);
+          }
+        })();
       }
       if (!isNotif) send(res);
       return;

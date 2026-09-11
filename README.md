@@ -84,6 +84,14 @@ Worktree mode (no file stomping):
 - **Result shape**: `{text, toolsUsed, notices, dialogsCancelled, extensionErrors, compactions, retries, tokens, cost, contextUsage, sessionFile}` rendered as text + summary for Claude.
 - **Session lifecycle**: `pi_ask` follow-ups continue the same session (history kept). `pi_new_session` aborts any run, drops history, starts clean for the next task. Verified live against real pi (session file rotates, `pi_state` follows). Same shape for OpenCode: `oc_ask` / `oc_new_session`, verified live (`OCASK-OK`, $0.0016 tracked).
 - **OpenCode transport notes**: root API prefix (`/api` is half-broken server-side: health 404s, status errors); settle = SSE `session.idle` subscribed BEFORE prompting (fast runs otherwise win the race — same class as pi's `agent_start` race); port scan 4597+ (explicit port required, `--port 0` ignored); per-spawn server password. Env: `OC_BIN`, `OC_CWD`, `OC_PORT`, `OC_MODEL` (provider/model), `OC_ASK_TIMEOUT_MS`, `OC_BASE_URL` (tests/attach).
+
+## Speed pass P0–P4 (2026-09-11)
+
+- **P0 bus**: `drainUnread` compacts consumed records past `BUS_KEEP_CONSUMED` (default 200 kept) and early-exits without rewrite when nothing is unread; `claimToPi` same watermark, never drops undelivered. Measured before: 23ms/3.5MB at 20k records, growing forever.
+- **P1 async tickets**: `pi_ask_async` / `oc_ask_async` return a ticket id now; results post to the bus (`kind=result`, `ticket=<id>`) for inbox/hook delivery; `agent_tickets` lists running/done/failed. In-memory (bridge restart loses running tickets — documented in tool text).
+- **P2 cold start**: bridge-owned pi spawns with `PI_OFFLINE=1` unless explicitly set (skips update checks).
+- **P3 warm pool, NOT in-process**: investigated `AgentSession`/`createAgentSession` — real but = reimplementing pi's `main()` (services, model runtime, extension runner) with version coupling; `RpcClient` is same-subprocess, zero gain. So: background warm-up after MCP initialize (pi pre-spawn + oc serve pre-start, no prompt/tokens, failures fall back to lazy). Verified live; `BRIDGE_WARMUP=0` opts out (tests set it).
+- **P4 context tax**: all 12→18 tool descriptions cut to one-liners (~2.2k chars before); delegated results capped at `RESULT_CAP` (default 8000 chars) with overflow spilled to `$AGENT_BUS/results/` + pointer. Formatting lives in side-effect-free `bridge/format.mjs` (importing `mcp-server.mjs` in-process hangs test runners on its stdin listener — learned the hard way).
 - **Settle tracking**: anchored on a `settledCount` generation (prompt ack can arrive before `agent_start`; `isStreaming` alone races).
 - **Hook counter**: `$AGENT_BUS/.hook-counter.json`; mismatch one-time warnings in `.hook-warned.json`.
 - **Bus limits**: single-`appendFileSync` lines <4KB are atomic-enough on macOS; larger lines are best-effort. Drain is temp-file + rename; two racing drainers are possible but rare (graduate to `.lock` if it bites).

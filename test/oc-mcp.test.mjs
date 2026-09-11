@@ -18,6 +18,7 @@ function startServer(env) {
   return spawn(process.execPath, [SERVER], {
     env: {
       ...process.env,
+      BRIDGE_WARMUP: "0",
       STUB_MODE: "happy",
       PI_BIN: process.execPath,
       PI_EXTRA_ARGS: STUB_PI,
@@ -81,6 +82,16 @@ describe("mcp server: opencode tools", () => {
     const fresh = await rpc(proc, { method: "tools/call", params: { name: "oc_new_session", arguments: {} } }, 5);
     assert.ok(!fresh.result.isError);
     assert.match(fresh.result.content[0].text, /Fresh OpenCode session/);
+    const asyncRes = await rpc(proc, { method: "tools/call", params: { name: "oc_ask_async", arguments: { message: "oc background" } } }, 6);
+    assert.ok(!asyncRes.result.isError);
+    const ticket = asyncRes.result.content[0].text.match(/Ticket (\S+)/)[1];
+    let found = null;
+    for (let i = 0; i < 40; i++) {
+      const inbox = await rpc(proc, { method: "tools/call", params: { name: "pi_inbox", arguments: {} } }, 100 + i);
+      if (inbox.result.content[0].text.includes(ticket)) { found = inbox.result.content[0].text; break; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    assert.ok(found && found.includes("oc background"), "oc ticket result arrived via inbox");
     proc.kill("SIGTERM");
     await new Promise((r) => setTimeout(r, 800));
   });

@@ -35,6 +35,15 @@ export class PiSession {
     this.spawnError = null;
   }
 
+  // Bridge-owned pi never needs update checks/package telemetry at startup;
+  // default them off (honor an explicit PI_OFFLINE=0). Saves seconds per boot.
+  spawnEnv() {
+    return {
+      ...process.env,
+      PI_OFFLINE: process.env.PI_OFFLINE ?? "1",
+    };
+  }
+
   buildArgs() {
     const args = [...this.extraArgs, "--mode", "rpc"];
     if (this.piModel) args.push("--model", this.piModel);
@@ -51,6 +60,7 @@ export class PiSession {
     try {
       this.child = spawn(this.piBin, args, {
         cwd: this.piCwd,
+        env: this.spawnEnv(),
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {

@@ -12,7 +12,7 @@ const STUB = path.join(HERE, "stub-pi.mjs");
 
 function startServer(env) {
   return spawn(process.execPath, [SERVER], {
-    env: { ...process.env, STUB_MODE: "happy", PI_BIN: process.execPath, PI_EXTRA_ARGS: STUB, PI_CWD: "/tmp", ...env },
+    env: { ...process.env, STUB_MODE: "happy", PI_BIN: process.execPath, PI_EXTRA_ARGS: STUB, PI_CWD: "/tmp", BRIDGE_WARMUP: "0", ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
 }
@@ -39,13 +39,14 @@ describe("mcp server", () => {
   it("initialize -> tools/list -> tools/call round-trips; stdout is clean", async () => {
     const bus = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-"));
     const proc = startServer({ AGENT_BUS: bus });
+    try {
     let stderr = "";
     proc.stderr.on("data", (c) => (stderr += c.toString()));
     const init = await rpc(proc, { method: "initialize", params: { protocolVersion: "2024-11-05" } }, 1);
     assert.equal(init.result.protocolVersion, "2024-11-05");
     const list = await rpc(proc, { method: "tools/list" }, 2);
     const names = list.result.tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ["agent_send", "agent_sessions", "oc_abort", "oc_ask", "oc_new_session", "oc_state", "pi_abort", "pi_ask", "pi_inbox", "pi_new_session", "pi_state", "pi_steer"]);
+    assert.deepEqual(names, ["agent_send", "agent_sessions", "agent_tickets", "oc_abort", "oc_ask", "oc_ask_async", "oc_new_session", "oc_state", "pi_abort", "pi_ask", "pi_ask_async", "pi_inbox", "pi_new_session", "pi_state", "pi_steer"]);
     const state = await rpc(proc, { method: "tools/call", params: { name: "pi_state", arguments: {} } }, 3);
     assert.ok(state.result.content[0].text.includes("model"));
     const ask = await rpc(proc, { method: "tools/call", params: { name: "pi_ask", arguments: { message: "do /abs/path/task" } } }, 4);
@@ -69,11 +70,28 @@ describe("mcp server", () => {
     const sess = await rpc(proc, { method: "tools/call", params: { name: "agent_sessions", arguments: {} } }, 8);
     assert.ok(!sess.result.isError);
     assert.match(sess.result.content[0].text, /no paired worker sessions/);
+    // async ticket: returns immediately, result lands in inbox
+    const t0 = Date.now();
+    const asyncRes = await rpc(proc, { method: "tools/call", params: { name: "pi_ask_async", arguments: { message: "background job" } } }, 9);
+    assert.ok(!asyncRes.result.isError);
+    assert.ok(Date.now() - t0 < 5000, "async must not block");
+    const ticket = asyncRes.result.content[0].text.match(/Ticket (\S+)/)[1];
+    let found = null;
+    for (let i = 0; i < 40; i++) {
+      const inbox = await rpc(proc, { method: "tools/call", params: { name: "pi_inbox", arguments: {} } }, 100 + i);
+      if (inbox.result.content[0].text.includes(ticket) && inbox.result.content[0].text.includes("background job")) { found = inbox.result.content[0].text; break; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    assert.ok(found, "ticket result arrived via inbox");
+    const tickets = await rpc(proc, { method: "tools/call", params: { name: "agent_tickets", arguments: {} } }, 200);
+    assert.match(tickets.result.content[0].text, /done/);
     // tool error returns isError, not protocol error
-    const bad = await rpc(proc, { method: "tools/call", params: { name: "nope", arguments: {} } }, 9);
+    const bad = await rpc(proc, { method: "tools/call", params: { name: "nope", arguments: {} } }, 300);
     assert.equal(bad.result.isError, true);
-    proc.kill("SIGTERM");
-    await new Promise((r) => setTimeout(r, 500));
+    } finally {
+      proc.kill("SIGKILL");
+      await new Promise((r) => setTimeout(r, 300));
+    }
   });
 
   it("pi_ask against missing binary returns isError, server stays usable", async () => {

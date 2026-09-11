@@ -121,6 +121,17 @@ describe("transport framing + correlation", () => {
     await stopQuiet(s);
   });
 
+  it("spawn env defaults PI_OFFLINE=1 unless explicitly set", async () => {
+    const s = new PiSession({ piBin: process.execPath, extraArgs: ["x"], piCwd: "/tmp" });
+    assert.equal(s.spawnEnv().PI_OFFLINE, "1");
+    process.env.PI_OFFLINE = "0";
+    try {
+      assert.equal(s.spawnEnv().PI_OFFLINE, "0");
+    } finally {
+      delete process.env.PI_OFFLINE;
+    }
+  });
+
   it("1MB single line + CRLF framing", async () => {
     const s = new PiSession({ piBin: process.execPath, extraArgs: [STUB], piCwd: "/tmp" });
     // craft raw frames directly
