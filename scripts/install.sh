@@ -7,11 +7,11 @@ mkdir -p "$AGENT_BUS" ~/.pi/agent/extensions ~/.claude/hooks 2>/dev/null || true
 cp "$HERE/pi-extensions/claude-bridge.ts" ~/.pi/agent/extensions/claude-bridge.ts
 echo "Extension installed."
 if command -v claude >/dev/null 2>&1; then
-  claude mcp add pi-bridge -s user -- node "$HERE/bridge/mcp-server.mjs" || true
+  claude mcp add switchboard -s user -- node "$HERE/bridge/mcp-server.mjs" || true
   echo "MCP registered. Add Stop hook to ~/.claude/settings.json:"
 else
   echo "claude CLI not found; register MCP manually:"
-  echo "  claude mcp add pi-bridge -s user -- node $HERE/bridge/mcp-server.mjs"
+  echo "  claude mcp add switchboard -s user -- node $HERE/bridge/mcp-server.mjs"
 fi
 cat <<EOF
 {

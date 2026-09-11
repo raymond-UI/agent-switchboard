@@ -1,4 +1,4 @@
-# PRD: Agent Sync Layer (Claude Code ↔ pi)
+# PRD: Agent Switchboard (Claude Code ↔ pi; original design doc)
 
 Status: ready to build
 Owner: Raymond Asogwa / Mzed Studio
@@ -46,7 +46,7 @@ Out of scope for v1:
     │
     ▼
 ┌─────────────────┐   MCP stdio      ┌──────────────┐   pi RPC (JSONL)   ┌────────┐
-│  Claude Code    │◄────────────────►│  pi-bridge   │◄──────────────────►│   pi   │
+│  Claude Code    │◄────────────────►│ switchboard  │◄──────────────────►│   pi   │
 │  (interactive)  │                  │  (node proc) │                    │ (rpc)  │
 └────────┬────────┘                  └──────────────┘                    └───┬────┘
          │                                                                   │
@@ -55,7 +55,7 @@ Out of scope for v1:
       ┌──────────────────────── message bus (JSONL file) ────────────────────────┐
 ```
 
-Claude Code spawns `pi-bridge` as an MCP stdio server. `pi-bridge` spawns pi. The bus is a plain append-only JSONL file both sides can reach.
+Claude Code spawns the switchboard as an MCP stdio server. The switchboard spawns pi. The bus is a plain append-only JSONL file both sides can reach.
 
 Direction rules, which are load bearing:
 

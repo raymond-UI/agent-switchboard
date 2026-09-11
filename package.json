@@ -1,12 +1,12 @@
 {
-  "name": "agent-sync-layer",
+  "name": "agent-switchboard",
   "version": "0.1.0",
-  "description": "Local sync layer: Claude Code <-> pi (MCP bridge, RPC transport, file bus, stop hook)",
+  "description": "Local sync layer: Claude Code + pi + OpenCode peers (MCP switchboard, RPC transport, file bus, stop hook)",
   "type": "module",
   "engines": { "node": ">=18" },
   "bin": {
-    "pi-bridge": "./bridge/mcp-server.mjs",
-    "pi-inbox": "./hooks/pi-inbox.mjs"
+    "switchboard": "./bridge/mcp-server.mjs",
+    "switchboard-inbox": "./hooks/pi-inbox.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"

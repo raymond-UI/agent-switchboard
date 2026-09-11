@@ -1,10 +1,10 @@
-# Agent Sync Layer (Claude Code ↔ pi ↔ OpenCode)
+# Agent Switchboard
 
 Local sync layer letting Claude Code, pi, and OpenCode work the same
 codebase as peers, on one Mac. Claude Code is interactive; pi and OpenCode
 run headless behind one bridge process. Any pair can message each other;
 Claude can delegate blocking work to either worker. See
-`PRD-agent-sync-layer.md` for the original design doc.
+`PRD-agent-switchboard.md` for the original design doc.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ Claude can delegate blocking work to either worker. See
     │
     ▼
 ┌─────────────────┐   MCP stdio      ┌──────────────┐   pi RPC (JSONL)   ┌────────┐
-│  Claude Code    │◄────────────────►│  pi-bridge   │◄──────────────────►│   pi   │
+│  Claude Code    │◄────────────────►│ switchboard  │◄──────────────────►│   pi   │
 │  (interactive)  │                  │  (node proc) │                    │ (rpc)  │
 └────────┬────────┘                  └──────────────┘                    └───┬────┘
          │                                                                   │
@@ -60,7 +60,7 @@ in review by design.
 
 # 2. Same-directory pairing (simplest)
 export AGENT_BUS=$PWD/.agentbus PI_CWD=$PWD
-claude mcp add pi-bridge -s user -- node $PWD/bridge/mcp-server.mjs
+claude mcp add switchboard -s user -- node $PWD/bridge/mcp-server.mjs
 # add to ~/.claude/settings.json:
 # { "hooks": { "Stop": [{ "hooks": [{ "type": "command",
 #     "command": "node /abs/path/hooks/pi-inbox.mjs" }] }] } }

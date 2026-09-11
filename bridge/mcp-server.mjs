@@ -201,7 +201,7 @@ async function handleToolCall(name, args) {
         if (!message || typeof message !== "string")
           return errResult("pi_ask requires a 'message' string.");
         const warn = relativePathWarning(message);
-        if (warn) log("[pi-bridge] WARN:", warn);
+        if (warn) log("[switchboard] WARN:", warn);
         const r = await pi.ask(message, { timeoutMs: config.askTimeoutMs });
         let out = capResult(formatAskResult(r), config.agentBus);
         if (warn) out += `\n\nWARNING: ${warn}`;
@@ -248,7 +248,7 @@ async function handleToolCall(name, args) {
         if (!message || typeof message !== "string")
           return errResult("oc_ask requires a 'message' string.");
         if (path.resolve(oc.ocCwd) !== path.resolve(config.bridgeLaunchDir)) {
-          log(`[pi-bridge] WARN: OC_CWD (${oc.ocCwd}) differs from Claude's dir (${config.bridgeLaunchDir}). Prefer absolute paths.`);
+          log(`[switchboard] WARN: OC_CWD (${oc.ocCwd}) differs from Claude's dir (${config.bridgeLaunchDir}). Prefer absolute paths.`);
         }
         const r = await oc.ask(message, { timeoutMs: config.askTimeoutMs });
         const parts = [r.text || "(empty)", ""];
@@ -338,7 +338,7 @@ async function handleRequest(msg) {
         result: {
           protocolVersion: version,
           capabilities: { tools: {} },
-          serverInfo: { name: "pi-bridge", version: "0.1.0" },
+          serverInfo: { name: "switchboard", version: "0.1.0" },
         },
       };
       initialized = true;
@@ -346,7 +346,7 @@ async function handleRequest(msg) {
       try {
         writeBusInfo(config.agentBus, { piCwd: config.piCwd });
       } catch (err) {
-        log("[pi-bridge] WARN: cannot write .bus-info.json:", err.message);
+        log("[switchboard] WARN: cannot write .bus-info.json:", err.message);
       }
       // P3 warm pool: pre-spawn workers in the background (no prompt, no
       // tokens) so the first ask doesn't pay spawn+model-load. Lazy path
@@ -355,15 +355,15 @@ async function handleRequest(msg) {
         (async () => {
           try {
             pi.ensureStarted();
-            log("[pi-bridge] pi warming up...");
+            log("[switchboard] pi warming up...");
           } catch (err) {
-            log("[pi-bridge] pi warmup failed (lazy start still works):", err.message);
+            log("[switchboard] pi warmup failed (lazy start still works):", err.message);
           }
           try {
             await oc.ensureServe();
-            log("[pi-bridge] opencode serve warm");
+            log("[switchboard] opencode serve warm");
           } catch (err) {
-            log("[pi-bridge] opencode warmup failed (lazy start still works):", err.message);
+            log("[switchboard] opencode warmup failed (lazy start still works):", err.message);
           }
         })();
       }
@@ -419,7 +419,7 @@ process.stdin.on("data", (chunk) => {
 });
 
 async function shutdown(signal) {
-  log(`[pi-bridge] ${signal}, stopping workers...`);
+  log(`[switchboard] ${signal}, stopping workers...`);
   // Force-exit even if graceful stop hangs (e.g. already-dead child).
   const force = setTimeout(() => process.exit(0), 8000);
   if (typeof force.unref === "function") force.unref();
@@ -435,4 +435,4 @@ async function shutdown(signal) {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-log(`[pi-bridge] ready. PI_CWD=${config.piCwd} AGENT_BUS=${config.agentBus} PI_BIN=${config.piBin}`);
+log(`[switchboard] ready. PI_CWD=${config.piCwd} AGENT_BUS=${config.agentBus} PI_BIN=${config.piBin}`);

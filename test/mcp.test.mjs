@@ -53,7 +53,7 @@ describe("mcp server", () => {
     assert.ok(!ask.result.isError, JSON.stringify(ask).slice(0, 300));
     assert.match(ask.result.content[0].text, /stub answer/);
     // stdout clean: every line so far was consumed as JSON; stderr got logs
-    assert.match(stderr, /pi-bridge/);
+    assert.match(stderr, /switchboard/);
     // notifications ignored
     proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
     // fresh session cycle: ask -> new session -> ask continues in the new one

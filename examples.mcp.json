@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "pi-bridge": {
+    "switchboard": {
       "command": "node",
-      "args": ["/abs/path/to/agent-sync/bridge/mcp-server.mjs"],
+      "args": ["/abs/path/to/agent-switchboard/bridge/mcp-server.mjs"],
       "env": {
         "AGENT_BUS": "/abs/path/to/shared/.agentbus",
         "PI_CWD": "/abs/path/to/project-pi",

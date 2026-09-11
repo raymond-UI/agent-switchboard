@@ -19,5 +19,5 @@ Next:
   export AGENT_BUS=$SHARED_BUS
   export PI_CWD=$PI_DIR
   cp pi-extensions/claude-bridge.ts ~/.pi/agent/extensions/claude-bridge.ts
-  claude mcp add pi-bridge -s user -- node $PWD/bridge/mcp-server.mjs
+  claude mcp add switchboard -s user -- node $PWD/bridge/mcp-server.mjs
 EOF
