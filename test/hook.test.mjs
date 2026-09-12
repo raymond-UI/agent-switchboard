@@ -82,6 +82,33 @@ describe("stop hook decision matrix", () => {
     assert.equal(rest[0].read, false);
   });
 
+  it("heartbeats claude presence from the hook payload", () => {
+    const b = mkBusWith([]);
+    runHook({ bus: b, payload: { session_id: "sess-HB" } });
+    const rec = JSON.parse(fs.readFileSync(path.join(b, "presence", "claude-sess-HB.json"), "utf8"));
+    assert.equal(rec.agent, "claude");
+    assert.equal(rec.sessionId, "sess-HB");
+  });
+
+  it("addressed records only block their own claude session", () => {
+    const b = mkBusWith([]);
+    fs.appendFileSync(
+      path.join(b, "to-claude.jsonl"),
+      JSON.stringify({ ts: new Date().toISOString(), from: "pi", kind: "fyi", text: "for A", session: null, paths: [], to: "sess-A", read: false }) + "\n"
+    );
+    const other = runHook({ bus: b, payload: { session_id: "sess-B" } });
+    assert.equal(other.stdout.trim(), "");
+    const mine = runHook({ bus: b, payload: { session_id: "sess-A" } });
+    assert.match(JSON.parse(mine.stdout).reason, /for A/);
+    // Legacy payload without session id: first-come delivery preserved.
+    const b2 = mkBusWith([]);
+    fs.appendFileSync(
+      path.join(b2, "to-claude.jsonl"),
+      JSON.stringify({ ts: new Date().toISOString(), from: "pi", kind: "fyi", text: "for A2", session: null, paths: [], to: "sess-A", read: false }) + "\n"
+    );
+    assert.match(JSON.parse(runHook({ bus: b2, payload: {} }).stdout).reason, /for A2/);
+  });
+
   it("mixed inbox delivers only non-ticket messages", () => {
     const b = mkBusWith(["direct hello"]);
     fs.appendFileSync(

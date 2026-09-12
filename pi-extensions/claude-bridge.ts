@@ -14,7 +14,7 @@ function busDir(): string {
   );
 }
 
-function appendToBus(text: string, kind: string, paths: string[]) {
+function appendToBus(text: string, kind: string, paths: string[], to?: string) {
   const dir = busDir();
   mkdirSync(dir, { recursive: true });
   const session = process.env.PI_SESSION_FILE || null;
@@ -24,10 +24,29 @@ function appendToBus(text: string, kind: string, paths: string[]) {
     kind,
     text,
     session,
+    ...(to ? { to } : {}),
     paths: Array.isArray(paths) ? paths : [],
     read: false,
   };
   appendFileSync(join(dir, "to-claude.jsonl"), JSON.stringify(record) + "\n", "utf8");
+}
+
+// True when `to` names a live Claude session (presence heartbeat from its
+// Stop hook). Falls back to worker routing when unknown.
+function isClaudeSession(to: string): boolean {
+  try {
+    const dir = join(busDir(), "presence");
+    const files = readdirSync(dir);
+    const safe = to.replace(/[^A-Za-z0-9_-]/g, "_");
+    for (const f of files) {
+      if (!f.endsWith(".json")) continue;
+      try {
+        const rec = JSON.parse(readFileSync(join(dir, f), "utf8"));
+        if (rec && rec.agent === "claude" && (rec.sessionId === to || f === `claude-${safe}.json`)) return true;
+      } catch {}
+    }
+  } catch {}
+  return false;
 }
 
 const MessageClaudeParams = Type.Object({
@@ -44,7 +63,7 @@ const MessageClaudeParams = Type.Object({
   to: Type.Optional(
     Type.String({
       description:
-        'Route: omit (or "claude") for Claude Code via to-claude.jsonl; or a session id, session file, cwd, or "*" to message a running paired worker (pi or opencode) via to-pi.jsonl.',
+        'Route: omit (or "claude") for any Claude session; a Claude session id for THAT session only; or a worker session id/file/cwd/"*" for a running paired worker.',
     })
   ),
 });
@@ -84,7 +103,7 @@ export default function (pi: ExtensionAPI) {
       const paths = (params as { paths?: string[] }).paths || [];
       const to = (params as { to?: string }).to || "claude";
       try {
-        if (to === "claude") appendToBus(text, kind, paths);
+        if (to === "claude" || isClaudeSession(to)) appendToBus(text, kind, paths, to === "claude" ? undefined : to);
         else appendToPiBus(paths.length ? `${text}\nFiles: ${paths.join(", ")}` : text, kind, to);
       } catch (err) {
         return {
@@ -92,7 +111,7 @@ export default function (pi: ExtensionAPI) {
           details: {},
         };
       }
-      const where = to === "claude" ? "Claude (via pi_inbox/Stop-hook)" : `worker ${to} (via bus poll)`;
+      const where = to === "claude" ? "Claude (via pi_inbox/Stop-hook)" : `session ${to} (Claude sessions via Stop-hook, workers via bus poll)`;
       return {
         content: [
           {

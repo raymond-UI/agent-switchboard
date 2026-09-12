@@ -136,7 +136,14 @@ Trust note: any local bus writer can inject prompts into a paired pi. Treat `AGE
 - Incident 2026-09-11: full-featured v1 blanked the OpenCode UI on every project (no log evidence). Bisect cleared heartbeat-only ✅ then +tool ✅ then +watcher ✅ — remaining suspect for the original breakage is the init-time `session.list()` await, which the shipped version does lazily instead. Full v1 kept in `opencode-plugin/claude-bridge.full.ts` for reference.
 - Lesson: `to: "*"` broadcasts wake EVERY paired session (each burns a turn). Address singly for real work.
 
-## Delivery rule: no stale backlog
+## Delivery rule: addressed where possible
+
+- Worker sessions only receive bus messages newer than their birth (60s grace; exact id/file addressing bypasses).
+- Claude sessions likewise: the Stop hook heartbeats each session's id into `presence/` and only blocks for records with no target, `*`, or its own id. Ticket results stay pull-only (`pi_inbox`).
+- `message_claude {to}` routes by presence lookup: a Claude session id goes to `to-claude.jsonl` addressed; a worker id/file/cwd/`*` goes to `to-pi.jsonl`. Unknown targets fall back to worker routing.
+- Untargeted `to-claude` records keep legacy first-come delivery (whoever stops first).
+
+## Delivery rule: no stale backlog (workers)
 
 Worker sessions only receive bus messages with `ts` newer than their own
 birth (60s grace; exact session id/file addressing bypasses the gate).

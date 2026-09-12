@@ -3,7 +3,7 @@
 
 import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, watch, writeFileSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, watch, writeFileSync, statSync } from "node:fs";
 import { join, resolve, relative, dirname, sep } from "node:path";
 
 function busDir(): string {
@@ -33,6 +33,21 @@ function ensureBusIgnored(): void {
     if (parent === cur) return;
     cur = parent;
   }
+}
+
+function isClaudeSession(to: string): boolean {
+  try {
+    const files = readdirSync(join(busDir(), "presence"));
+    const safe = to.replace(/[^A-Za-z0-9_-]/g, "_");
+    for (const f of files) {
+      if (!f.endsWith(".json")) continue;
+      try {
+        const rec = JSON.parse(readFileSync(join(busDir(), "presence", f), "utf8"));
+        if (rec && rec.agent === "claude" && (rec.sessionId === to || f === `claude-${safe}.json`)) return true;
+      } catch {}
+    }
+  } catch {}
+  return false;
 }
 
 function heartbeat(sessionID: string, directory: string): void {
@@ -187,8 +202,9 @@ export const ClaudeBridgeMinimal: Plugin = async ({ client, directory }) => {
           const dir = busDir();
           try {
             mkdirSync(dir, { recursive: true });
-            if (to === "claude") {
-              appendFileSync(join(dir, "to-claude.jsonl"), JSON.stringify({ ts: new Date().toISOString(), from: "opencode", agent: "opencode", kind, text: args.text + suffix, session: context.sessionID, paths, read: false }) + "\n", "utf8");
+            if (to === "claude" || isClaudeSession(to)) {
+              const addressed = to === "claude" ? {} : { to };
+              appendFileSync(join(dir, "to-claude.jsonl"), JSON.stringify({ ts: new Date().toISOString(), from: "opencode", agent: "opencode", kind, text: args.text + suffix, session: context.sessionID, paths, read: false, ...addressed }) + "\n", "utf8");
             } else {
               appendFileSync(join(dir, "to-pi.jsonl"), JSON.stringify({ id: `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`, ts: new Date().toISOString(), from: "opencode", agent: "opencode", to, kind, text: args.text + suffix, deliveredTo: [] }) + "\n", "utf8");
             }

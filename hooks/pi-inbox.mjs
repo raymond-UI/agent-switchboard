@@ -75,6 +75,29 @@ async function main() {
   const config = resolveConfig();
   const agentBus = config.agentBus;
 
+  // Claude-side presence: this hook knows its own session id (payload) while
+  // the bridge/MCP side never does. Heartbeat so workers can address THIS
+  // Claude session via message_claude {to}. Stale entries die by pid check
+  // in listPresence; no shutdown hook exists to clean up after ourselves.
+  const mySessionId = payload.session_id || payload.sessionId || null;
+  if (mySessionId) {
+    try {
+      fs.mkdirSync(path.join(agentBus, "presence"), { recursive: true });
+      fs.writeFileSync(
+        path.join(agentBus, "presence", `claude-${String(mySessionId).replace(/[^A-Za-z0-9_-]/g, "_")}.json`),
+        JSON.stringify({
+          sessionId: String(mySessionId),
+          agent: "claude",
+          sessionFile: null,
+          cwd: payload.cwd || process.env.CLAUDE_PROJECT_DIR || null,
+          name: "claude-code",
+          pid: process.ppid || process.pid,
+          ts: new Date().toISOString(),
+        }, null, 2) + "\n"
+      );
+    } catch {}
+  }
+
   // Split-bus detection (PRD 7.5): compare hook-resolved path to bridge's .bus-info.json.
   let mismatchNote = null;
   try {
@@ -92,12 +115,16 @@ async function main() {
     // No .bus-info.json yet: bridge hasn't started. Not fatal.
   }
 
+  // Address filter: a record addresses me when it has no target, targets
+  // everyone, or names my session id. Without a session id (old payloads)
+  // everything matches (legacy first-come behavior).
+  const forMe = (r) => !mySessionId || !r || !r.to || r.to === "*" || r.to === mySessionId;
   let unread = [];
   try {
     // Ticket results are pull-only (pi_inbox): they name a ticket only its
     // launching session knows. Pushing them through every session's Stop
     // hook sprays async results into unrelated sessions sharing one bus.
-    unread = readUnread(agentBus).filter((r) => !r || !r.ticket);
+    unread = readUnread(agentBus).filter((r) => (!r || !r.ticket) && forMe(r));
   } catch {
     process.exit(0);
   }
@@ -118,10 +145,12 @@ async function main() {
     process.exit(0);
   }
   // Drain (marks read BEFORE emit) then block once with messages.
-  // Same ticket exclusion as above: ticket results stay unread for pull.
+  // Exclusions mirror the decision filter: ticket results stay unread for
+  // pull, and records addressed to OTHER Claude sessions stay for them.
+  const skip = (r) => !!(r && (r.ticket || (mySessionId && r.to && r.to !== "*" && r.to !== mySessionId)));
   let drained = [];
   try {
-    drained = hasMessages ? drainUnread(agentBus, process.env, (r) => !!(r && r.ticket)) : [];
+    drained = hasMessages ? drainUnread(agentBus, process.env, skip) : [];
   } catch {
     process.exit(0);
   }
