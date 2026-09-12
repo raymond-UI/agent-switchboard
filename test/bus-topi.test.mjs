@@ -71,6 +71,21 @@ describe("to-pi bus (prototype)", () => {
     assert.equal(pendingToPi(b, ["alice-id"]).length, 3);
   });
 
+  it("cwd is shared, never exact: old cwd-addressed backlog withheld", () => {
+    const b = tmpBus();
+    const oldTs = new Date(Date.now() - 3600000).toISOString();
+    const stale = { ...appendToPi(b, { text: "old proj brief", to: "/work/proj" }), ts: oldTs };
+    const fresh = { ...appendToPi(b, { text: "fresh proj brief", to: "/work/proj" }) };
+    fs.writeFileSync(
+      path.join(b, "to-pi.jsonl"),
+      [stale, fresh].map((r) => JSON.stringify(r)).join("\n") + "\n"
+    );
+    const ALICE_NEW = ["/sess/alice2.jsonl", "alice2-id", "/work/proj"];
+    const got = pendingToPi(b, ALICE_NEW, { sinceTs: Date.now(), exactIds: ALICE_NEW.slice(0, 2) }).map((r) => r.text);
+    assert.ok(!got.includes("old proj brief"), "stale cwd backlog withheld from new session");
+    assert.ok(got.includes("fresh proj brief"), "fresh cwd brief delivered to live session");
+  });
+
   it("matches on session file and cwd, not just id", () => {
     const b = tmpBus();
     appendToPi(b, { text: "by file", to: "/sess/alice.jsonl" });

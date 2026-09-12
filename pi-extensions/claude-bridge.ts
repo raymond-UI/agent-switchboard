@@ -130,6 +130,7 @@ export default function (pi: ExtensionAPI) {
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let sessionStartTs = 0;
   let myIds: string[] = [];
+  let myExactIds: string[] = []; // session file + id only (cwd is shared, never exact)
   let myPrimaryId = "";
   let mySessionId = "";
   const seenInMemory = new Set<string>();
@@ -200,9 +201,9 @@ export default function (pi: ExtensionAPI) {
     if (!myPrimaryId) return;
     for (const rec of readToPi()) {
       if (!rec || !rec.id || seenInMemory.has(rec.id)) continue;
-      const addressed = rec.to !== "*" && myIds.includes(rec.to);
-      const broadcast = rec.to === "*" || !rec.to;
-      if (!addressed && !broadcast) continue;
+      const addressed = myExactIds.includes(rec.to);
+      const mine = rec.to === "*" || !rec.to || myIds.includes(rec.to);
+      if (!mine) continue;
       // No stale backlog: only messages sent since this session was born
       // (60s grace), unless addressed to this exact session.
       if (!addressed && sessionStartTs) {
@@ -294,6 +295,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus("claude-bridge", "paired with Claude Code");
     sessionStartTs = Date.now();
     myIds = myIdentity(ctx as unknown as { cwd: string; sessionManager: { getSessionFile(): string | null; getSessionId(): string } });
+    myExactIds = myIds.slice(0, -1);
     myPrimaryId = myIds[0] || "";
     try {
       mySessionId = ctx.sessionManager.getSessionId() || "";

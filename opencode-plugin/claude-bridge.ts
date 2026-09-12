@@ -123,9 +123,10 @@ async function pollForMessages(client: SdkClient): Promise<void> {
     if (!rec || !rec.id) continue;
     const targets: string[] = [];
     for (const [sid, info] of knownSessions) {
+      // Only the session id is exact; directory is shared project-wide.
       const addressed = rec.to === sid;
-      const byDir = !!info.directory && rec.to === info.directory;
-      if (rec.to !== "*" && !addressed && !byDir) continue;
+      const mine = rec.to === "*" || !rec.to || addressed || (!!info.directory && rec.to === info.directory);
+      if (!mine) continue;
       if (!addressed && info.startedTs) {
         const ts = Date.parse(rec.ts);
         if (Number.isFinite(ts) && ts < info.startedTs - 60000) continue;

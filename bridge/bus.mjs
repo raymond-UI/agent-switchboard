@@ -242,15 +242,20 @@ export function readToPi(agentBus) {
  */
 export function pendingToPi(agentBus, myIds, opts = {}) {
   const ids = (Array.isArray(myIds) ? myIds : [myIds]).filter(Boolean);
+  // Exact identities (session file/id) are unique per session; cwd is shared
+  // by every session in a project and must NOT bypass the age gate.
+  const exact = new Set(
+    (Array.isArray(opts.exactIds) ? opts.exactIds : ids.slice(0, 2)).filter(Boolean)
+  );
   const since = typeof opts.sinceTs === "number" ? opts.sinceTs - 60000 : null;
   return readToPi(agentBus).filter((r) => {
     if (!r || typeof r !== "object") return false;
-    const addressed = r.to !== "*" && ids.includes(r.to);
-    const broadcast = r.to === "*" || !r.to;
-    if (!addressed && !broadcast) return false;
+    const isExact = exact.has(r.to);
+    const isMine = r.to === "*" || !r.to || ids.includes(r.to);
+    if (!isMine) return false;
     if (!Array.isArray(r.deliveredTo)) return true;
     if (r.deliveredTo.some((d) => ids.includes(d))) return false;
-    if (since !== null && !addressed) {
+    if (since !== null && !isExact) {
       const ts = Date.parse(r.ts);
       if (Number.isFinite(ts) && ts < since) return false;
     }
