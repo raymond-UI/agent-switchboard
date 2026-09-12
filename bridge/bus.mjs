@@ -232,17 +232,30 @@ export function readToPi(agentBus) {
  * Records awaiting delivery to an instance holding `myIds` (e.g.
  * [sessionFile, sessionId, cwd]). A record matches when to==="*" or to is
  * one of myIds, and none of myIds is in its deliveredTo list.
+ *
+ * `opts.sinceTs` (epoch ms): only records with ts >= sinceTs are eligible.
+ * A session must never inherit backlog predating its own birth — stale
+ * briefs (incl. superseded orders) auto-injecting into fresh sessions is
+ * how workers get told two opposite things at startup. Pass the session
+ * start time; exact file/id addressing bypasses the filter (it can only
+ * name a live session). 60s grace covers send-just-before-start races.
  */
-export function pendingToPi(agentBus, myIds) {
+export function pendingToPi(agentBus, myIds, opts = {}) {
   const ids = (Array.isArray(myIds) ? myIds : [myIds]).filter(Boolean);
-  return readToPi(agentBus).filter(
-    (r) =>
-      r &&
-      typeof r === "object" &&
-      (r.to === "*" || ids.includes(r.to)) &&
-      Array.isArray(r.deliveredTo) &&
-      !r.deliveredTo.some((d) => ids.includes(d))
-  );
+  const since = typeof opts.sinceTs === "number" ? opts.sinceTs - 60000 : null;
+  return readToPi(agentBus).filter((r) => {
+    if (!r || typeof r !== "object") return false;
+    const addressed = r.to !== "*" && ids.includes(r.to);
+    const broadcast = r.to === "*" || !r.to;
+    if (!addressed && !broadcast) return false;
+    if (!Array.isArray(r.deliveredTo)) return true;
+    if (r.deliveredTo.some((d) => ids.includes(d))) return false;
+    if (since !== null && !addressed) {
+      const ts = Date.parse(r.ts);
+      if (Number.isFinite(ts) && ts < since) return false;
+    }
+    return true;
+  });
 }
 
 /**

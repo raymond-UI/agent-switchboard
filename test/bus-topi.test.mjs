@@ -49,6 +49,28 @@ describe("to-pi bus (prototype)", () => {
     assert.equal(readToPi(b)[0].deliveredTo.length, 1);
   });
 
+  it("sessions never inherit pre-birth backlog (stale-brief fix)", () => {
+    const b = tmpBus();
+    const oldTs = new Date(Date.now() - 3600000).toISOString();
+    const nowTs = new Date().toISOString();
+    const old = { ...appendToPi(b, { text: "ancient broadcast", to: "*" }), ts: oldTs };
+    const addressed = { ...appendToPi(b, { text: "for alice", to: "alice-id" }), ts: oldTs };
+    const fresh = { ...appendToPi(b, { text: "fresh broadcast", to: "*" }), ts: nowTs };
+    // rewrite with fixed timestamps
+    const fs2 = fs;
+    fs2.writeFileSync(
+      path.join(b, "to-pi.jsonl"),
+      [old, addressed, fresh].map((r) => JSON.stringify(r)).join("\n") + "\n"
+    );
+    const sinceTs = Date.now();
+    const got = pendingToPi(b, ["alice-id"], { sinceTs }).map((r) => r.text);
+    assert.ok(!got.includes("ancient broadcast"), "stale broadcast withheld");
+    assert.ok(got.includes("for alice"), "exact addressing bypasses age gate");
+    assert.ok(got.includes("fresh broadcast"), "fresh broadcast delivered");
+    // No filter: back-compat, everything matches.
+    assert.equal(pendingToPi(b, ["alice-id"]).length, 3);
+  });
+
   it("matches on session file and cwd, not just id", () => {
     const b = tmpBus();
     appendToPi(b, { text: "by file", to: "/sess/alice.jsonl" });

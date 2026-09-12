@@ -182,7 +182,7 @@ const TOOLS = [
   },
   {
     name: "agent_send",
-    description: "agent_send(message, to?): async message to a RUNNING worker (no reply here; watch pi_inbox). to = id/file/cwd from agent_sessions, default broadcasts.",
+    description: "agent_send(message, to?): async message to a RUNNING worker (no reply here; watch pi_inbox). to = id/file/cwd from agent_sessions, default broadcasts. Worker sessions only receive messages sent after they started (no stale backlog), so address live sessions.",
     inputSchema: {
       type: "object",
       properties: {

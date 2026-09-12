@@ -136,6 +136,15 @@ Trust note: any local bus writer can inject prompts into a paired pi. Treat `AGE
 - Incident 2026-09-11: full-featured v1 blanked the OpenCode UI on every project (no log evidence). Bisect cleared heartbeat-only ✅ then +tool ✅ then +watcher ✅ — remaining suspect for the original breakage is the init-time `session.list()` await, which the shipped version does lazily instead. Full v1 kept in `opencode-plugin/claude-bridge.full.ts` for reference.
 - Lesson: `to: "*"` broadcasts wake EVERY paired session (each burns a turn). Address singly for real work.
 
+## Delivery rule: no stale backlog
+
+Worker sessions only receive bus messages with `ts` newer than their own
+birth (60s grace; exact session id/file addressing bypasses the gate).
+Claim-before-inject stops replays *within* a session, but a fresh session
+is a new identity — without the age gate it would auto-receive ancient
+broadcasts, including superseded orders. If a worker needs old context,
+brief it explicitly in a new message.
+
 ## Housekeeping
 
 Every component that creates the bus dir also appends it to the enclosing

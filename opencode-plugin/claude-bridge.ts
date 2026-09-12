@@ -57,8 +57,9 @@ function removeHeartbeat(sessionID: string): void {
 // Watcher: delivers to-pi.jsonl records into matching sessions. Started
 // LAZILY on first session.created (never at init — init stays side-effect
 // free). Injection via promptAsync (returns immediately, no turn-wait).
-type ToPiRecord = { id: string; to: string; text: string; deliveredTo?: string[] };
-const knownSessions = new Map<string, { directory: string }>();
+type ToPiRecord = { id: string; to: string; text: string; ts?: string; deliveredTo?: string[] };
+// startedTs gates delivery: no stale backlog into sessions (see bus.mjs).
+const knownSessions = new Map<string, { directory: string; startedTs: number }>();
 const claimedInMemory = new Set<string>();
 let watcherStarted = false;
 
@@ -122,10 +123,15 @@ async function pollForMessages(client: SdkClient): Promise<void> {
     if (!rec || !rec.id) continue;
     const targets: string[] = [];
     for (const [sid, info] of knownSessions) {
-      if (rec.to === "*" || rec.to === sid || (info.directory && rec.to === info.directory)) {
-        const delivered = Array.isArray(rec.deliveredTo) ? rec.deliveredTo : [];
-        if (!delivered.includes(sid) && !claimedInMemory.has(rec.id + ":" + sid)) targets.push(sid);
+      const addressed = rec.to === sid;
+      const byDir = !!info.directory && rec.to === info.directory;
+      if (rec.to !== "*" && !addressed && !byDir) continue;
+      if (!addressed && info.startedTs) {
+        const ts = Date.parse(rec.ts);
+        if (Number.isFinite(ts) && ts < info.startedTs - 60000) continue;
       }
+      const delivered = Array.isArray(rec.deliveredTo) ? rec.deliveredTo : [];
+      if (!delivered.includes(sid) && !claimedInMemory.has(rec.id + ":" + sid)) targets.push(sid);
     }
     for (const sid of targets) {
       if (!claim(rec.id, sid)) continue;
@@ -198,7 +204,7 @@ export const ClaudeBridgeMinimal: Plugin = async ({ client, directory }) => {
       const type = (event as { type?: string }).type || "";
       const props = (event as { properties?: Record<string, string> }).properties || {};
       if (type === "session.created" && props.sessionID) {
-        knownSessions.set(props.sessionID, { directory });
+        knownSessions.set(props.sessionID, { directory, startedTs: Date.now() });
         heartbeat(props.sessionID, directory);
         ensureWatcher(c);
         // Lazy seed: sessions predating plugin load. Fire-and-forget,
@@ -206,7 +212,8 @@ export const ClaudeBridgeMinimal: Plugin = async ({ client, directory }) => {
         c.session.list().then((list) => {
           for (const s of list.data || []) {
             if (s && s.id && !knownSessions.has(s.id)) {
-              knownSessions.set(s.id, { directory: s.directory || directory });
+              // Predates us: gate delivery as stale (startedTs = now).
+              knownSessions.set(s.id, { directory: s.directory || directory, startedTs: Date.now() });
             }
           }
           pollForMessages(c).catch(() => {});

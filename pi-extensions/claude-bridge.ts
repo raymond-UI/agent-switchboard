@@ -128,6 +128,7 @@ export default function (pi: ExtensionAPI) {
   // mirroring the bridge's drain semantics.
   let watcher: { close(): void } | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let sessionStartTs = 0;
   let myIds: string[] = [];
   let myPrimaryId = "";
   let mySessionId = "";
@@ -199,8 +200,18 @@ export default function (pi: ExtensionAPI) {
     if (!myPrimaryId) return;
     for (const rec of readToPi()) {
       if (!rec || !rec.id || seenInMemory.has(rec.id)) continue;
-      const mine = rec.to === "*" || myIds.includes(rec.to);
-      if (!mine) continue;
+      const addressed = rec.to !== "*" && myIds.includes(rec.to);
+      const broadcast = rec.to === "*" || !rec.to;
+      if (!addressed && !broadcast) continue;
+      // No stale backlog: only messages sent since this session was born
+      // (60s grace), unless addressed to this exact session.
+      if (!addressed && sessionStartTs) {
+        const ts = Date.parse(rec.ts);
+        if (Number.isFinite(ts) && ts < sessionStartTs - 60000) {
+          seenInMemory.add(rec.id);
+          continue;
+        }
+      }
       if (Array.isArray(rec.deliveredTo) && rec.deliveredTo.some((d) => myIds.includes(d))) {
         seenInMemory.add(rec.id);
         continue;
@@ -281,6 +292,7 @@ export default function (pi: ExtensionAPI) {
     } catch {}
     ensureBusIgnored();
     ctx.ui.setStatus("claude-bridge", "paired with Claude Code");
+    sessionStartTs = Date.now();
     myIds = myIdentity(ctx as unknown as { cwd: string; sessionManager: { getSessionFile(): string | null; getSessionId(): string } });
     myPrimaryId = myIds[0] || "";
     try {
