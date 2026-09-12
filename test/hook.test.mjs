@@ -68,6 +68,33 @@ describe("stop hook decision matrix", () => {
     assert.ok(blocks <= 3, `expected <=3 blocks, got ${blocks}`);
   });
 
+  it("ticket results are pull-only: never block, stay unread", () => {
+    const b = mkBusWith([]);
+    fs.appendFileSync(
+      path.join(b, "to-claude.jsonl"),
+      JSON.stringify({ ts: new Date().toISOString(), from: "pi", kind: "result", text: "Ticket t-1 settled", session: null, paths: [], ticket: "t-1", read: false }) + "\n"
+    );
+    const r = runHook({ bus: b, payload: {} });
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout.trim(), "");
+    // Still unread for the owning session's pi_inbox.
+    const rest = JSON.parse(`[${fs.readFileSync(path.join(b, "to-claude.jsonl"), "utf8").trim().split("\n").join(",")}]`);
+    assert.equal(rest[0].read, false);
+  });
+
+  it("mixed inbox delivers only non-ticket messages", () => {
+    const b = mkBusWith(["direct hello"]);
+    fs.appendFileSync(
+      path.join(b, "to-claude.jsonl"),
+      JSON.stringify({ ts: new Date().toISOString(), from: "pi", kind: "result", text: "Ticket t-2 settled", session: null, paths: [], ticket: "t-2", read: false }) + "\n"
+    );
+    const r = runHook({ bus: b, payload: {} });
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.decision, "block");
+    assert.match(out.reason, /direct hello/);
+    assert.doesNotMatch(out.reason, /t-2/);
+  });
+
   it("empty inbox resets counter and exits 0", () => {
     const b = mkBusWith([]);
     const r = runHook({ bus: b, payload: {} });

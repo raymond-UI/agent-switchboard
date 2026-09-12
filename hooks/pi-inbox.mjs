@@ -94,7 +94,10 @@ async function main() {
 
   let unread = [];
   try {
-    unread = readUnread(agentBus);
+    // Ticket results are pull-only (pi_inbox): they name a ticket only its
+    // launching session knows. Pushing them through every session's Stop
+    // hook sprays async results into unrelated sessions sharing one bus.
+    unread = readUnread(agentBus).filter((r) => !r || !r.ticket);
   } catch {
     process.exit(0);
   }
@@ -115,9 +118,10 @@ async function main() {
     process.exit(0);
   }
   // Drain (marks read BEFORE emit) then block once with messages.
+  // Same ticket exclusion as above: ticket results stay unread for pull.
   let drained = [];
   try {
-    drained = hasMessages ? drainUnread(agentBus) : [];
+    drained = hasMessages ? drainUnread(agentBus, process.env, (r) => !!(r && r.ticket)) : [];
   } catch {
     process.exit(0);
   }

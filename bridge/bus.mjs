@@ -121,7 +121,7 @@ export function keepConsumed(env = process.env) {
  * can't grow forever. Early-exits without touching the file when nothing is
  * unread. Returns the unread records.
  */
-export function drainUnread(agentBus, env = process.env) {
+export function drainUnread(agentBus, env = process.env, exclude = null) {
   const file = busFile(agentBus);
   let raw;
   try {
@@ -138,7 +138,7 @@ export function drainUnread(agentBus, env = process.env) {
     try {
       const rec = JSON.parse(line);
       records.push(rec);
-      if (rec && rec.read !== true) unread.push(rec);
+      if (rec && rec.read !== true && !(exclude && exclude(rec))) unread.push(rec);
     } catch {
       // skip malformed
     }

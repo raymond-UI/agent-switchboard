@@ -149,7 +149,7 @@ const TOOLS = [
   },
   {
     name: "pi_ask_async",
-    description: "pi_ask_async(message): non-blocking pi delegate. Returns ticket id now; result lands in pi_inbox (ticket=...). Fan out N tasks, then collect. Lost if bridge restarts.",
+    description: "pi_ask_async(message): non-blocking pi delegate. Returns ticket id now; result arrives ONLY in YOUR pi_inbox under ticket=... (never via Stop hook, so it can't leak into a sibling session). Fan out N tasks, then collect. Lost if bridge restarts.",
     inputSchema: {
       type: "object",
       properties: { message: { type: "string", description: "Self-contained task for pi (absolute paths)." } },
@@ -158,7 +158,7 @@ const TOOLS = [
   },
   {
     name: "oc_ask_async",
-    description: "oc_ask_async(message): non-blocking OpenCode delegate. Returns ticket id now; result lands in pi_inbox (ticket=...).",
+    description: "oc_ask_async(message): non-blocking OpenCode delegate. Returns ticket id now; result arrives ONLY in YOUR pi_inbox under ticket=... (never via Stop hook).",
     inputSchema: {
       type: "object",
       properties: { message: { type: "string", description: "Self-contained task for OpenCode (absolute paths)." } },
