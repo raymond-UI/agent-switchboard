@@ -95,6 +95,7 @@ export default function (pi: ExtensionAPI) {
       "Use message_claude when you finish a delegated task, hit a blocker, need a decision, or spot a file conflict.",
       "Keep messages short; include absolute file paths you touched in 'paths'.",
       "Use message_claude with `to` to reach a running paired worker (see presence via Claude) instead of Claude.",
+      "If an incoming mesh message names a reply-to Claude session id, answer THAT session with `to` set to the id. Never guess between sessions.",
     ],
     parameters: MessageClaudeParams,
     async execute(_toolCallId, params) {

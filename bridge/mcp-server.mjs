@@ -311,9 +311,27 @@ async function handleToolCall(name, args) {
         const message = args?.message;
         if (!message || typeof message !== "string")
           return errResult("agent_send requires a 'message' string.");
-        const rec = appendToAgent(config.agentBus, { text: message, to: args?.to || "*" });
+        // Reply-to stamping: the worker must be able to answer WITHOUT
+        // guessing. The bridge can't know the calling Claude session (MCP
+        // exposes no session id), but presence knows who's alive: exactly
+        // one live Claude session => deterministic reply target, stamped
+        // into the record AND the text. Zero/multiple => no stamp (the
+        // worker sees candidates via agent_sessions, or the human relays).
+        const claudeAlive = listPresence(config.agentBus).filter((p) => p.agent === "claude" && p.alive && p.sessionId);
+        const replyTo = claudeAlive.length === 1 ? claudeAlive[0].sessionId : null;
+        const footer = replyTo
+          ? `\n\n(Reply to the Claude session that sent this with message_claude {to: "${replyTo}"})`
+          : "";
+        const rec = appendToAgent(config.agentBus, {
+          text: message + footer,
+          to: args?.to || "*",
+          ...(replyTo ? { replyTo } : {}),
+        });
+        const who = replyTo
+          ? ` Replies route to Claude session ${replyTo}.`
+          : ` ${claudeAlive.length === 0 ? "No live Claude session seen" : `${claudeAlive.length} live Claude sessions seen`} — worker cannot auto-reply; name a session id for it to answer.`;
         return okResult(
-          `Queued for running worker (to=${rec.to}, id=${rec.id}). Async: the target polls every ~2s. No reply here; watch pi_inbox.`
+          `Queued for running worker (to=${rec.to}, id=${rec.id}). Async: the target polls every ~2s. No reply here; watch pi_inbox.${who}`
         );
       }
       default:

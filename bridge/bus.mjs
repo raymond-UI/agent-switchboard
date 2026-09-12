@@ -192,7 +192,7 @@ export function appendToPi(agentBus, opts) {
   return appendToAgent(agentBus, opts);
 }
 
-export function appendToAgent(agentBus, { text, to = "*", kind = "brief", from = "claude", agent = null }) {
+export function appendToAgent(agentBus, { text, to = "*", kind = "brief", from = "claude", agent = null, replyTo = null }) {
   ensureBusDir(agentBus);
   const record = {
     id: `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
@@ -203,6 +203,7 @@ export function appendToAgent(agentBus, { text, to = "*", kind = "brief", from =
     kind,
     text: String(text ?? ""),
     deliveredTo: [],
+    ...(replyTo ? { replyTo } : {}),
   };
   fs.appendFileSync(toPiFile(agentBus), JSON.stringify(record) + "\n", "utf8");
   return record;

@@ -70,6 +70,19 @@ describe("mcp server", () => {
     const sess = await rpc(proc, { method: "tools/call", params: { name: "agent_sessions", arguments: {} } }, 8);
     assert.ok(!sess.result.isError);
     assert.match(sess.result.content[0].text, /no paired worker sessions/);
+    // reply-to stamping: exactly one live claude session => deterministic target
+    const { writePresence, removePresence, readToPi } = await import("../bridge/bus.mjs");
+    writePresence(bus, { sessionId: "claude-only", cwd: "/tmp", name: "t", agent: "claude" });
+    const stamped = await rpc(proc, { method: "tools/call", params: { name: "agent_send", arguments: { message: "hello worker", to: "worker-9" } } }, 9);
+    assert.match(stamped.result.content[0].text, /claude-only/);
+    const recs = readToPi(bus);
+    const mine = recs.find((r) => r.to === "worker-9");
+    assert.equal(mine.replyTo, "claude-only");
+    assert.match(mine.text, /reply-to|Reply to/);
+    // zero live claude sessions => no stamp, honest report
+    removePresence(bus, "claude-only");
+    const unstamped = await rpc(proc, { method: "tools/call", params: { name: "agent_send", arguments: { message: "hello again", to: "worker-9" } } }, 10);
+    assert.match(unstamped.result.content[0].text, /No live Claude session/);
     // async ticket: returns immediately, result lands in inbox
     const t0 = Date.now();
     const asyncRes = await rpc(proc, { method: "tools/call", params: { name: "pi_ask_async", arguments: { message: "background job" } } }, 9);

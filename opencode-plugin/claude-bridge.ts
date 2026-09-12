@@ -187,7 +187,7 @@ export const ClaudeBridgeMinimal: Plugin = async ({ client, directory }) => {
     tool: {
       message_claude: tool({
         description:
-          "Send an async message via the shared agent message bus. Default route is the paired Claude Code session (reads when free). With `to` set to a worker session id/directory (or \"*\"), routes to a running paired worker instead. Always one-way and async: do NOT wait for a reply in the same turn.",
+          "Send an async message via the shared agent message bus. Default route is the paired Claude Code session (reads when free). With `to` set to a Claude session id (from presence) or a worker session id/directory (or \"*\"), routes there instead. If an incoming message names a reply-to session id, answer THAT session with `to` set. Always one-way and async: do NOT wait for a reply in the same turn.",
         args: {
           text: tool.schema.string().describe("Message text (result, question, warning, or update)"),
           kind: tool.schema.enum(["result", "question", "warning", "fyi"]).optional().describe("Message kind"),
