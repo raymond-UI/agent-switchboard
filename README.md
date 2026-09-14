@@ -12,7 +12,8 @@ Claude can delegate blocking work to either worker. See
 - [Claude Code](https://code.claude.com) CLI, [pi](https://pi.dev) CLI
   (any, both, or either worker — the bridge degrades gracefully),
   [OpenCode](https://opencode.ai) v1.18+ (for the `oc_*` tools)
-- Tested against: pi 0.85.0, OpenCode 1.18.30, Node 24 (CI: Node 20/22/24 × ubuntu/macos)
+- Tested against: pi 0.85.0, OpenCode 1.18.30, Node 24 (CI: Node 20/22/24 × ubuntu/macos/windows)
+- Windows supported: single entry `node bridge/launcher.mjs <mcp|hook>` everywhere (no `env` binary needed; the poisoned-preload problem is Unix-specific, handled there with `env -u`), atomic rewrites retry on Windows file locks, installer is `node scripts/install.mjs` (no bash). Use forward slashes in settings paths; run the worktree script under git-bash
 
 ```
   human
@@ -49,14 +50,14 @@ in review by design.
 | `hooks/pi-inbox.mjs` | Claude Code Stop hook delivering bus messages |
 | `test/stub-pi.mjs` | Fixture stub speaking the RPC protocol (`STUB_MODE=happy\|exit-mid\|dialog\|compaction\|timeout-hang`) |
 | `test/*.test.mjs` | `node:test` suites (bus, hook matrix, transport, MCP) |
-| `scripts/install.sh` | 10-minute provisioning (extension + MCP + hook) |
+| `scripts/install.mjs` | 10-minute provisioning, all OSes (extension + MCP + hook) |
 | `scripts/setup-worktree.sh` | Worktree mode setup (default, safer) |
 
 ## Quick start
 
 ```bash
 # 1. Provision (copies extension, registers MCP, prints hook JSON)
-./scripts/install.sh
+node scripts/install.mjs
 
 # 2. Same-directory pairing (simplest)
 export AGENT_BUS=$PWD/.agentbus PI_CWD=$PWD

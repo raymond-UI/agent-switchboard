@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "hooks", "pi-inbox.mjs");
+const LAUNCHER = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bridge", "launcher.mjs");
 
 function runHook({ bus, payload }) {
   return spawnSync("node", [HOOK], {
@@ -123,10 +124,11 @@ describe("stop hook decision matrix", () => {
   });
 
   it("survives poisoned NODE_OPTIONS via the settings invocation", () => {
-    // Mirrors the exact hook command in ~/.claude/settings.json: env -u
-    // strips a multiplexer preload pointing at a purged temp file.
+    // Mirrors the hook command in ~/.claude/settings.json: `env -u` strips
+    // a multiplexer preload pointing at a purged temp file. (In-process
+    // scrubbing is impossible: the poison kills node before main runs.)
     const b = mkBusWith(["still works"]);
-    const r = spawnSync("env", ["-u", "NODE_OPTIONS", "node", HOOK], {
+    const r = spawnSync("env", ["-u", "NODE_OPTIONS", process.execPath, LAUNCHER, "hook"], {
       input: JSON.stringify({}),
       encoding: "utf8",
       env: { ...process.env, AGENT_BUS: b, PI_CWD: b, NODE_OPTIONS: "--require /nonexistent/restore.cjs" },

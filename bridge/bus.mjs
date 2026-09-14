@@ -109,6 +109,24 @@ export function readUnread(agentBus) {
   return readAll(agentBus).filter((r) => r && r.read !== true);
 }
 
+// Best-effort atomic file replace. Windows refuses rename-over-open-files
+// (EPERM/EBUSY/ENOTEMPTY where POSIX swaps silently), so retry briefly.
+// Throws only when every attempt fails.
+export function atomicReplace(tmp, dest, attempts = 8, delayMs = 50) {
+  let last;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      fs.renameSync(tmp, dest);
+      return;
+    } catch (err) {
+      last = err;
+      if (!["EPERM", "EBUSY", "ENOTEMPTY", "EACCES"].includes(err.code) || i === attempts - 1) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+    }
+  }
+  throw last;
+}
+
 export function keepConsumed(env = process.env) {
   const n = parseInt(env.BUS_KEEP_CONSUMED || "200", 10);
   return Number.isFinite(n) && n >= 0 ? n : 200;
@@ -158,7 +176,7 @@ export function drainUnread(agentBus, env = process.env, exclude = null) {
   // Best-effort atomic rewrite: write temp + rename.
   const tmp = file + ".tmp." + process.pid;
   fs.writeFileSync(tmp, out, "utf8");
-  fs.renameSync(tmp, file);
+  atomicReplace(tmp, file);
   return unread;
 }
 
@@ -306,7 +324,7 @@ export function claimToPi(agentBus, recordId, myId) {
     const lines = recs.filter((r) => live.has(r) || kept.has(r)).map((r) => JSON.stringify(r));
     const tmp = file + ".tmp." + process.pid;
     fs.writeFileSync(tmp, lines.join("\n") + (lines.length ? "\n" : ""), "utf8");
-    fs.renameSync(tmp, file);
+    atomicReplace(tmp, file);
   }
   return claimed;
 }
