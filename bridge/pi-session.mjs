@@ -37,11 +37,15 @@ export class PiSession {
 
   // Bridge-owned pi never needs update checks/package telemetry at startup;
   // default them off (honor an explicit PI_OFFLINE=0). Saves seconds per boot.
+  // Also strips NODE_OPTIONS: hostile host envs (e.g. a multiplexer preload
+  // pointing at a purged temp file) would otherwise kill node before main.
   spawnEnv() {
-    return {
+    const env = {
       ...process.env,
       PI_OFFLINE: process.env.PI_OFFLINE ?? "1",
     };
+    delete env.NODE_OPTIONS;
+    return env;
   }
 
   buildArgs() {

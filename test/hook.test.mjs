@@ -122,6 +122,19 @@ describe("stop hook decision matrix", () => {
     assert.doesNotMatch(out.reason, /t-2/);
   });
 
+  it("survives poisoned NODE_OPTIONS via the settings invocation", () => {
+    // Mirrors the exact hook command in ~/.claude/settings.json: env -u
+    // strips a multiplexer preload pointing at a purged temp file.
+    const b = mkBusWith(["still works"]);
+    const r = spawnSync("env", ["-u", "NODE_OPTIONS", "node", HOOK], {
+      input: JSON.stringify({}),
+      encoding: "utf8",
+      env: { ...process.env, AGENT_BUS: b, PI_CWD: b, NODE_OPTIONS: "--require /nonexistent/restore.cjs" },
+    });
+    assert.equal(r.status, 0);
+    assert.match(JSON.parse(r.stdout).reason, /still works/);
+  });
+
   it("empty inbox resets counter and exits 0", () => {
     const b = mkBusWith([]);
     const r = runHook({ bus: b, payload: {} });

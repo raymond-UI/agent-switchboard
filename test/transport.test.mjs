@@ -121,6 +121,15 @@ describe("transport framing + correlation", () => {
     await stopQuiet(s);
   });
 
+  it("spawn env strips NODE_OPTIONS (poisoned host preload immunity)", async () => {
+    process.env.NODE_OPTIONS = "--require /nonexistent/restore.cjs";
+    try {
+      assert.ok(!("NODE_OPTIONS" in new PiSession({ piBin: "x", piCwd: "/tmp" }).spawnEnv()));
+    } finally {
+      delete process.env.NODE_OPTIONS;
+    }
+  });
+
   it("spawn env defaults PI_OFFLINE=1 unless explicitly set", async () => {
     const s = new PiSession({ piBin: process.execPath, extraArgs: ["x"], piCwd: "/tmp" });
     assert.equal(s.spawnEnv().PI_OFFLINE, "1");
