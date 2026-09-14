@@ -1,179 +1,97 @@
 # Agent Switchboard
 
-Local sync layer letting Claude Code, pi, and OpenCode work the same
-codebase as peers, on one Mac. Claude Code is interactive; pi and OpenCode
-run headless behind one bridge process. Any pair can message each other;
-Claude can delegate blocking work to either worker. See
-`PRD-agent-switchboard.md` for the original design doc.
+Your coding agents as peers on one machine. Claude Code talks to a **pi**
+worker and an **OpenCode** worker: it delegates whole tasks, nudges running
+sessions, and hears back — every pair messageable, nothing copy-pasted
+between terminals.
 
-## Prerequisites
-
-- Node.js ≥ 18, zero npm dependencies (`npm test` just works)
-- [Claude Code](https://code.claude.com) CLI, [pi](https://pi.dev) CLI
-  (any, both, or either worker — the bridge degrades gracefully),
-  [OpenCode](https://opencode.ai) v1.18+ (for the `oc_*` tools)
-- Tested against: pi 0.85.0, OpenCode 1.18.30, Node 24 (CI: Node 20/22/24 × ubuntu/macos/windows)
-- Windows supported: single entry `node bridge/launcher.mjs <mcp|hook>` everywhere (no `env` binary needed; the poisoned-preload problem is Unix-specific, handled there with `env -u`), atomic rewrites retry on Windows file locks, installer is `node scripts/install.mjs` (no bash). Use forward slashes in settings paths; run the worktree script under git-bash
-
-```
-  human
-    │
-    ▼
-┌─────────────────┐   MCP stdio      ┌──────────────┐   pi RPC (JSONL)   ┌────────┐
-│  Claude Code    │◄────────────────►│ switchboard  │◄──────────────────►│   pi   │
-│  (interactive)  │                  │  (node proc) │                    │ (rpc)  │
-└────────┬────────┘                  └──────────────┘                    └───┬────┘
-         │                                                                   │
-         │ Stop hook reads                                                   │ message_claude
-         ▼                                                                   ▼
-      ┌──────────────────────── message bus (JSONL file) ────────────────────────┐
-```
-
-Direction rule (load bearing): **Claude→pi is sync** (`pi_ask` blocks until
-pi settles). **Pi→Claude is always async** (bus + Stop hook / `pi_inbox`).
-A sync callback from pi into Claude during `pi_ask` would deadlock — rejected
-in review by design.
-
-## Layout
-
-| Path | What |
-|---|---|
-| `bridge/env.mjs` | Shared env contract (`AGENT_BUS`, `PI_CWD`, `PI_BIN`, …) |
-| `bridge/bus.mjs` | File bus: append / read / drain (`to-claude.jsonl`) |
-| `bridge/pi-session.mjs` | pi transport: spawns `pi --mode rpc`, LF framing, id correlation, settle tracking, dialog auto-cancel, telemetry |
-| `bridge/mcp-server.mjs` | MCP stdio server (18 tools): `pi_ask[_async]`, `pi_steer`, `pi_abort`, `pi_new_session`, `pi_state`, `oc_ask[_async]`, `oc_state`, `oc_abort`, `oc_new_session`, `agent_send`, `agent_sessions`, `agent_tickets`, `pi_inbox` |
-| `bridge/format.mjs` | Side-effect-free result formatting + `RESULT_CAP` spillover (importable in tests) |
-| `opencode-plugin/claude-bridge.ts` | OpenCode plugin (VERIFIED live): `message_claude` tool, presence heartbeat, `to-pi` watcher + SDK injection |
-| `bridge/oc-session.mjs` | OpenCode transport: owns `opencode serve` (port scan, per-spawn password), promptAsync + SSE `session.idle` settle, abort/steer/state/new-session. `oc_steer` = queued follow-up (verified live: current run finishes first, no mid-turn interrupt — unlike pi's steer) |
-| `test/stub-oc-server.mjs` | Fixture HTTP+SSED server (`STUB_OC_MODE=happy\|hang\|tooluse`) |
-| `pi-extensions/claude-bridge.ts` | pi extension: `message_claude` tool + `/tell-claude` |
-| `hooks/pi-inbox.mjs` | Claude Code Stop hook delivering bus messages |
-| `test/stub-pi.mjs` | Fixture stub speaking the RPC protocol (`STUB_MODE=happy\|exit-mid\|dialog\|compaction\|timeout-hang`) |
-| `test/*.test.mjs` | `node:test` suites (bus, hook matrix, transport, MCP) |
-| `scripts/install.mjs` | 10-minute provisioning, all OSes (extension + MCP + hook) |
-| `scripts/setup-worktree.sh` | Worktree mode setup (default, safer) |
-
-## Quick start
+## Try it without cloning
 
 ```bash
-# 1. Provision (copies extension, registers MCP, prints hook JSON)
-node scripts/install.mjs
-
-# 2. Same-directory pairing (simplest)
-export AGENT_BUS=$PWD/.agentbus PI_CWD=$PWD
-claude mcp add switchboard -s user -- node $PWD/bridge/mcp-server.mjs
-# add to ~/.claude/settings.json:
-# { "hooks": { "Stop": [{ "hooks": [{ "type": "command",
-#     "command": "node /abs/path/hooks/pi-inbox.mjs" }] }] } }
-
-# 3. In Claude: /mcp, then pi_ask "…" with absolute paths
+npx -y -p github:raymond-UI/agent-switchboard switchboard-install
 ```
 
-Worktree mode (no file stomping):
+That installs the worker plugins, registers the bridge, and prints the one
+Stop-hook snippet to add to your Claude settings. No checkout needed.
 
-```bash
-./scripts/setup-worktree.sh /path/to/project
-# follow the printed exports (AGENT_BUS shared outside both trees)
-```
+## The loop (30 seconds)
 
-## Environment
-
-| Variable | Meaning | Default |
+| You want to… | You use | What happens |
 |---|---|---|
-| `AGENT_BUS` | Bus dir. Must match on both sides | `$PI_CWD/.agentbus` |
-| `PI_CWD` | pi working dir | `$PWD` |
-| `PI_BIN` | pi executable | `pi` |
-| `PI_MODEL` | `--model` passthrough | pi default |
-| `PI_NAME` | `--name` passthrough | `paired-with-claude-code` |
-| `PI_SESSION_DIR` | `--session-dir` passthrough | pi default |
-| `PI_ASK_TIMEOUT_MS` | One `pi_ask` wall budget | `900000` |
-| `PI_MAX_CONSECUTIVE_BLOCKS` | Stop-hook loop cap | `3` |
-| `PI_EXTRA_ARGS` | Prepended to pi argv (tests/wrappers) | — |
+| Hand a worker a task and wait | `pi_ask` / `oc_ask` | Blocks until it settles; returns text + tools used + cost |
+| Hand over N tasks at once | `pi_ask_async` / `oc_ask_async` | Ticket id now; each result lands in `pi_inbox` |
+| Nudge a running session | `agent_send` (address from `agent_sessions`) | Lands in its conversation in ~2s |
+| Hear back | `pi_inbox` (or the Stop hook, while working) | Results, questions, warnings |
+| Fresh context for a new task | `pi_new_session` / `oc_new_session` | Old history dropped, unrecoverable |
+| What's it costing | `pi_state` / `oc_state` | Model, tokens, context pressure |
 
-## Decisions locked in this implementation
+Instructions to workers must be self-contained with **absolute paths** —
+they can't see your Claude conversation.
 
-- **Timeout**: `pi_ask` timeout sends `abort()` then returns `isError`; bridge stays usable.
-- **Result shape**: `{text, toolsUsed, notices, dialogsCancelled, extensionErrors, compactions, retries, tokens, cost, contextUsage, sessionFile}` rendered as text + summary for Claude.
-- **Session lifecycle**: `pi_ask` follow-ups continue the same session (history kept). `pi_new_session` aborts any run, drops history, starts clean for the next task. Verified live against real pi (session file rotates, `pi_state` follows). Same shape for OpenCode: `oc_ask` / `oc_new_session`, verified live (`OCASK-OK`, $0.0016 tracked).
-- **OpenCode transport notes**: root API prefix (`/api` is half-broken server-side: health 404s, status errors); settle = SSE `session.idle` subscribed BEFORE prompting (fast runs otherwise win the race — same class as pi's `agent_start` race); port scan 4597+ (explicit port required, `--port 0` ignored); per-spawn server password. Env: `OC_BIN`, `OC_CWD`, `OC_PORT`, `OC_MODEL` (provider/model), `OC_ASK_TIMEOUT_MS`, `OC_BASE_URL` (tests/attach).
+## Install properly
 
-## Speed pass P0–P4 (2026-09-11)
+```bash
+git clone https://github.com/raymond-UI/agent-switchboard
+cd agent-switchboard
+node scripts/install.mjs
+```
 
-- **P0 bus**: `drainUnread` compacts consumed records past `BUS_KEEP_CONSUMED` (default 200 kept) and early-exits without rewrite when nothing is unread; `claimToPi` same watermark, never drops undelivered. Measured before: 23ms/3.5MB at 20k records, growing forever.
-- **P1 async tickets**: `pi_ask_async` / `oc_ask_async` return a ticket id now; results post to the bus (`kind=result`, `ticket=<id>`). Ticket results are PULL-ONLY via `pi_inbox` — the Stop hook skips them so async results can't spray into sibling Claude sessions sharing one bus (2026-09-11 incident: t-51fc8212 landed in the wrong session). `agent_tickets` lists running/done/failed. In-memory (bridge restart loses running tickets — documented in tool text).
-- **P2 cold start**: bridge-owned pi spawns with `PI_OFFLINE=1` unless explicitly set (skips update checks).
-- **P3 warm pool, NOT in-process**: investigated `AgentSession`/`createAgentSession` — real but = reimplementing pi's `main()` (services, model runtime, extension runner) with version coupling; `RpcClient` is same-subprocess, zero gain. So: background warm-up after MCP initialize (pi pre-spawn + oc serve pre-start, no prompt/tokens, failures fall back to lazy). Verified live; `BRIDGE_WARMUP=0` opts out (tests set it).
-- **P4 context tax**: all 12→18 tool descriptions cut to one-liners (~2.2k chars before); delegated results capped at `RESULT_CAP` (default 8000 chars) with overflow spilled to `$AGENT_BUS/results/` + pointer. Formatting lives in side-effect-free `bridge/format.mjs` (importing `mcp-server.mjs` in-process hangs test runners on its stdin listener — learned the hard way).
-- **Settle tracking**: anchored on a `settledCount` generation (prompt ack can arrive before `agent_start`; `isStreaming` alone races).
-- **Hook counter**: `$AGENT_BUS/.hook-counter.json`; mismatch one-time warnings in `.hook-warned.json`.
-- **Bus limits**: single-`appendFileSync` lines <4KB are atomic-enough on macOS; larger lines are best-effort. Drain is temp-file + rename; two racing drainers are possible but rare (graduate to `.lock` if it bites).
-- **Tests**: `node:test`, zero-dep. Stub pi first; never burn tokens in tests.
+Prerequisites: Node.js ≥ 18, the [Claude Code](https://code.claude.com) CLI,
+and whichever workers you want ([pi](https://pi.dev),
+[OpenCode](https://opencode.ai) v1.18+). Zero npm dependencies.
+Windows works the same way (forward slashes in settings paths; worktree
+script wants git-bash). Tested: pi 0.85.0, OpenCode 1.18.30, Node 20/22/24.
 
-## Manual verification (needs real CLIs)
+Two agents, one checkout: give each its own worktree
+(`./scripts/setup-worktree.sh /path/to/project`) or split folders by
+agreement. Two writers in one tree with no ownership split *will* stomp
+each other — the tooling detects, it doesn't merge.
 
-- [ ] Worktree mode: delegate a real task via `pi_ask`, merge result
-- [ ] Shared tree: both agents, different folders
-- [ ] pi sends `warning` mid-task → Claude gets it via Stop hook
-- [ ] Separate dirs + shared `AGENT_BUS` → messages flow
-- [ ] Mismatched `AGENT_BUS` → one-time warning fires
+## Rules that bite (read once)
 
-## Prototype: Claude → running pi (NEW)
+1. **Replies need addresses.** `agent_send` to a live session id is precise;
+   `*` broadcasts wake *every* paired session (each burns a turn).
+2. **New sessions don't inherit backlog.** Workers only receive messages sent
+   after they were born (exact id/file addressing bypasses). Re-brief instead
+   of relying on history.
+3. **Idle Claude sessions can't be pushed to.** The Stop hook fires on
+   transitions; a parked session needs one nudge (`check pi_inbox`) or a
+   desktop notification — there is no timer hook. Nothing is ever lost: the
+   bus is durable, pull anytime.
+4. **Async results are pull-only.** Ticket results skip the Stop hook so they
+   can't spray into a sibling session — collect by ticket id in `pi_inbox`.
+5. **The bus is trusted.** Anyone who can write to `AGENT_BUS` can whisper to
+   your agents. Same bar as project files. Bus dirs auto-ignore themselves
+   in enclosing git repos.
 
-Reverse direction, verified live against real pi 0.85.0 (not just stub):
+## Reference
 
-- `pi_sessions` lists paired pi workers via `$AGENT_BUS/presence/*.json` heartbeats (written on `session_start`, refreshed on `agent_settled`, removed on `session_shutdown`; `alive` = pid check, same machine).
-- `pi_send {message, to}` appends to `$AGENT_BUS/to-pi.jsonl`. `to` is a session id, session file, cwd, or `"*"` broadcast (prefer addressing one).
-- The extension watches the bus dir (file watcher + 2s poll fallback; dir-watch because claim rewrites replace the file) and injects via `pi.sendMessage({customType: "claude-message"}, {triggerTurn: true})` — the sanctioned `file-trigger.ts` pattern.
-- Claim-before-inject (`deliveredTo`, per-instance memory set) gives exactly-once per session; broadcast reaches every paired pi once.
-- Live proof: presence appeared, broadcast claimed by session file id, injected text present in `get_messages`. No stub involved.
+**Tools (16):** `pi_ask[_async]`, `pi_steer`, `pi_abort`, `pi_new_session`,
+`pi_state`, `oc_ask[_async]`, `oc_steer`, `oc_state`, `oc_abort`,
+`oc_new_session`, `agent_send`, `agent_sessions`, `agent_tickets`, `pi_inbox`.
+One-line descriptions in-tool; details here.
 
-Trust note: any local bus writer can inject prompts into a paired pi. Treat `AGENT_BUS` like project files — shared dir, trusted users only. The installed `~/.pi/agent/extensions/claude-bridge.ts` is the PRE-mesh copy (no `to` route); reinstall from this repo to enable worker-to-worker messaging.
+**Env (essentials):** `AGENT_BUS` (must match on all sides when dirs differ),
+`PI_CWD` / `OC_CWD`, `PI_MODEL` / `OC_MODEL` (`provider/model`), `PI_ASK_TIMEOUT_MS`
+(15 min), `RESULT_CAP` (8k chars, overflow spills to `$AGENT_BUS/results/`).
+Full table in code: `bridge/env.mjs`, `bridge/oc-session.mjs`.
 
-## Mesh status: pi ✓, OpenCode ✓ (2026-09-11, live)
+**Layout:** `bridge/` (env, bus, format, MCP server, `pi-session`,
+`oc-session`, `launcher`), `hooks/pi-inbox.mjs` (Stop hook),
+`pi-extensions/`, `opencode-plugin/`, `test/` (stubs + `node:test` suites),
+`scripts/` (installer, worktree setup). Original design doc:
+`PRD-agent-switchboard.md`.
 
-- Bus + presence carry `agent: "pi" | "opencode"`; `agent_send`/`agent_sessions` route by session id/file/cwd across both. 28/28 tests green.
-- Pi extension gained `message_claude {to}` (Claude default; worker address otherwise). Repo copy only — reinstall to go live.
-- OpenCode plugin VERIFIED live against 1.18.30 TUI: heartbeat presence, `message_claude` tool (PING from opencode arrived in `to-claude.jsonl`), watcher injection (PONG from Claude appeared in-session, claimed by all three live sessions incl. lazy-seeded pre-existing ones). Installed globally at `~/.config/opencode/plugins/claude-bridge.ts`.
-- Incident 2026-09-11: full-featured v1 blanked the OpenCode UI on every project (no log evidence). Bisect cleared heartbeat-only ✅ then +tool ✅ then +watcher ✅ — remaining suspect for the original breakage is the init-time `session.list()` await, which the shipped version does lazily instead. Full v1 kept in `opencode-plugin/claude-bridge.full.ts` for reference.
-- Lesson: `to: "*"` broadcasts wake EVERY paired session (each burns a turn). Address singly for real work.
+**Security:** localhost only (bridge servers bind `127.0.0.1` with per-spawn
+passwords; MCP is stdio, no auth by design). Don't weaken silently — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Delivery rule: addressed where possible
+## For contributors
 
-- Worker sessions only receive bus messages newer than their birth (60s grace; exact id/file addressing bypasses).
-- Claude sessions likewise: the Stop hook heartbeats each session's id into `presence/` and only blocks for records with no target, `*`, or its own id. Ticket results stay pull-only (`pi_inbox`).
-- `message_claude {to}` routes by presence lookup: a Claude session id goes to `to-claude.jsonl` addressed; a worker id/file/cwd/`*` goes to `to-pi.jsonl`. Unknown targets fall back to worker routing.
-- Untargeted `to-claude` records keep legacy first-come delivery (whoever stops first).
-
-## Delivery rule: no stale backlog (workers)
-
-Worker sessions only receive bus messages with `ts` newer than their own
-birth (60s grace; exact session id/file addressing bypasses the gate).
-Claim-before-inject stops replays *within* a session, but a fresh session
-is a new identity — without the age gate it would auto-receive ancient
-broadcasts, including superseded orders. If a worker needs old context,
-brief it explicitly in a new message.
-
-## Housekeeping
-
-Every component that creates the bus dir also appends it to the enclosing
-git's `.gitignore` (repo-relative, idempotent, silent) — runtime files
-(`to-*.jsonl`, `presence/`, counters) never pollute `git status`. Nothing
-happens when the bus lives outside a repo.
-
-## Security
-
-- `AGENT_BUS` is a trusted path: any local writer can inject prompts into paired agents. Same bar as project files.
-- Bridge-owned servers bind `127.0.0.1` with per-spawn passwords. MCP is stdio, no auth by design (local only).
-- See CONTRIBUTING.md; do not weaken silently.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Stub-first, tests with every change (`npm test`).
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-## Deferred (per PRD §10)
-
-`pi_ask_async` tickets, shared `PROTOCOL.md`, multi-pi, socket broker, ACP.
+`npm test` — zero deps, stub-first (fixtures for both harnesses' protocols),
+live runs for final verification only. Hard rules: claim-before-emit on every
+take-one primitive; worker→Claude is always async (a sync callback into a
+blocked ask deadlocks both processes); never import the MCP server into the
+test runner (stdin listener hangs it). Design history (settle races, ticket
+spray incident, stale-backlog gate, UI-blanking bisect, poisoned-preload
+immunity) lives in git log + code comments. MIT — see [LICENSE](LICENSE).
