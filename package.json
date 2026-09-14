@@ -6,7 +6,8 @@
   "engines": { "node": ">=18" },
   "bin": {
     "switchboard": "./bridge/mcp-server.mjs",
-    "switchboard-inbox": "./hooks/pi-inbox.mjs"
+    "switchboard-inbox": "./hooks/pi-inbox.mjs",
+    "switchboard-install": "./scripts/install.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
