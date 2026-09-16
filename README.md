@@ -64,6 +64,21 @@ each other — the tooling detects, it doesn't merge.
    your agents. Same bar as project files. Bus dirs auto-ignore themselves
    in enclosing git repos.
 
+## Who can orchestrate whom
+
+| Orchestrator | Drives pi | Drives OpenCode | Drives Claude | How |
+|---|---|---|---|
+| Claude Code | `pi_ask` | `oc_ask` | — (self) | MCP bridge, always on |
+| OpenCode | MCP bridge | MCP bridge | `delegate_claude` tool | Add bridge to `opencode.json`; flag-gated tool |
+| pi | bus only (`message_claude {to}`) | `delegate_oc` / bus | `delegate_claude` tool | Flag-gated tools |
+
+Worker→worker also works over the bus (`message_claude {to}`).
+Multi-orchestration is **flag-gated** (`SWITCHBOARD_MULTI_ORCH=1`) and
+**depth-capped** (`SWITCHBOARD_DEPTH`/`SWITCHBOARD_MAX_DEPTH`, default cap 2):
+delegation depth travels in env across every spawn, and any delegate tool at
+the cap refuses with a clear error instead of looping A→B→A forever.
+Live-verified: pi → `delegate_claude` round-trip (`DELTEST`).
+
 ## Reference
 
 **Tools (16):** `pi_ask[_async]`, `pi_steer`, `pi_abort`, `pi_new_session`,

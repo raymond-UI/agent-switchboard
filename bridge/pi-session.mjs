@@ -4,6 +4,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { childDepthEnv } from "./env.mjs";
 
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 
@@ -41,7 +42,7 @@ export class PiSession {
   // pointing at a purged temp file) would otherwise kill node before main.
   spawnEnv() {
     const env = {
-      ...process.env,
+      ...childDepthEnv(process.env),
       PI_OFFLINE: process.env.PI_OFFLINE ?? "1",
     };
     delete env.NODE_OPTIONS;

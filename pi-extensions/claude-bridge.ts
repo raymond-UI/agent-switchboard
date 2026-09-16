@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, watch, writeFileSync, unlinkSync, existsSync, statSync } from "node:fs";
 import { join, resolve, relative, dirname, sep } from "node:path";
+import { spawnSync } from "node:child_process";
 
 function busDir(): string {
   return (
@@ -84,7 +85,103 @@ function appendToPiBus(text: string, kind: string, to: string) {
   appendFileSync(join(dir, "to-pi.jsonl"), JSON.stringify(record) + "\n", "utf8");
 }
 
+// Multi-orchestrator delegate tools (flag-gated). Depth travels in env so
+// A->B->A loops die at the cap with a clear error instead of burning money.
+// Mirrors bridge/env.mjs depth helpers (kept inline: extensions can't import
+// bridge modules at runtime).
+function multiOrchEnabled(): boolean {
+  return ["1", "true", "yes"].includes(String(process.env.SWITCHBOARD_MULTI_ORCH || "").toLowerCase());
+}
+function depthRefusal(): string | null {
+  const rawD = process.env.SWITCHBOARD_DEPTH || "0";
+  const rawM = process.env.SWITCHBOARD_MAX_DEPTH || "2";
+  const d = Number.isFinite(parseInt(rawD, 10)) && parseInt(rawD, 10) >= 0 ? parseInt(rawD, 10) : 0;
+  const m = Number.isFinite(parseInt(rawM, 10)) && parseInt(rawM, 10) >= 1 ? parseInt(rawM, 10) : 2;
+  return d < m ? null : `delegation depth ${d} at cap (max ${m}); refusing to avoid an orchestration loop`;
+}
+function childEnv(): Record<string, string | undefined> {
+  const d = parseInt(process.env.SWITCHBOARD_DEPTH || "0", 10);
+  return { ...process.env, SWITCHBOARD_DEPTH: String((Number.isFinite(d) && d >= 0 ? d : 0) + 1) };
+}
+function capOutput(text: string, cap = 8000): string {
+  return text.length <= cap ? text : text.slice(0, cap) + `\n\n[... truncated ${text.length - cap} chars]`;
+}
+
+const DelegateParams = Type.Object({
+  message: Type.String({ description: "Self-contained task (absolute paths); the delegate cannot see this conversation" }),
+  timeoutMs: Type.Optional(Type.Number({ description: "Wall budget ms (default 600000)" })),
+});
+
+function registerDelegateTools(pi: ExtensionAPI) {
+  pi.registerTool({
+    name: "delegate_claude",
+    label: "Delegate to Claude",
+    description:
+      "Blocking delegate to Claude Code headless (`claude -p`). Self-contained message, absolute paths. Returns its final text. Honors delegation depth cap.",
+    promptSnippet: "delegate_claude(message): blocking delegate to Claude Code.",
+    promptGuidelines: ["Use delegate_claude to hand a whole task to Claude Code and wait for its result."],
+    parameters: DelegateParams,
+    async execute(_toolCallId, params) {
+      const refusal = depthRefusal();
+      if (refusal) return { content: [{ type: "text" as const, text: refusal }], details: {} };
+      const message = (params as { message: string }).message;
+      const timeout = (params as { timeoutMs?: number }).timeoutMs || 600000;
+      try {
+        const r = spawnSync("claude", ["-p", "--output-format", "text", message], {
+          encoding: "utf8",
+          timeout,
+          maxBuffer: 4 * 1024 * 1024,
+          env: childEnv(),
+        });
+        if (r.error) throw r.error;
+        if (r.status !== 0) throw new Error(`claude exited ${r.status}: ${(r.stderr || "").slice(0, 300)}`);
+        return { content: [{ type: "text" as const, text: capOutput(r.stdout || "(empty)") }], details: {} };
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `delegate_claude failed: ${(err as Error).message}` }], details: {} };
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "delegate_oc",
+    label: "Delegate to OpenCode",
+    description:
+      "Blocking delegate to OpenCode headless (`opencode run`). Self-contained message, absolute paths. Best-effort: parses text parts from JSON events. Honors delegation depth cap.",
+    promptSnippet: "delegate_oc(message): blocking delegate to OpenCode.",
+    promptGuidelines: ["Use delegate_oc to hand a whole task to OpenCode and wait for its result."],
+    parameters: DelegateParams,
+    async execute(_toolCallId, params) {
+      const refusal = depthRefusal();
+      if (refusal) return { content: [{ type: "text" as const, text: refusal }], details: {} };
+      const message = (params as { message: string }).message;
+      const timeout = (params as { timeoutMs?: number }).timeoutMs || 600000;
+      try {
+        const r = spawnSync("opencode", ["run", "--format", "json", message], {
+          encoding: "utf8",
+          timeout,
+          maxBuffer: 8 * 1024 * 1024,
+          env: childEnv(),
+        });
+        if (r.error) throw r.error;
+        if (r.status !== 0) throw new Error(`opencode exited ${r.status}: ${(r.stderr || "").slice(0, 300)}`);
+        const texts: string[] = [];
+        for (const line of String(r.stdout || "").split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const ev = JSON.parse(line);
+            if (ev.type === "text" && ev.part?.text) texts.push(ev.part.text);
+          } catch {}
+        }
+        return { content: [{ type: "text" as const, text: capOutput(texts.join("\n") || "(no text parts)") }], details: {} };
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: `delegate_oc failed: ${(err as Error).message}` }], details: {} };
+      }
+    },
+  });
+}
+
 export default function (pi: ExtensionAPI) {
+  if (multiOrchEnabled()) registerDelegateTools(pi);
   pi.registerTool({
     name: "message_claude",
     label: "Message Claude",

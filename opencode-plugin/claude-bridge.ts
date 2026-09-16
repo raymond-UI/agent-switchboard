@@ -5,6 +5,18 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, watch, writeFileSync, statSync } from "node:fs";
 import { join, resolve, relative, dirname, sep } from "node:path";
+import { spawnSync } from "node:child_process";
+
+function multiOrchEnabled(): boolean {
+  return ["1", "true", "yes"].includes(String(process.env.SWITCHBOARD_MULTI_ORCH || "").toLowerCase());
+}
+function depthRefusal(): string | null {
+  const d = parseInt(process.env.SWITCHBOARD_DEPTH || "0", 10);
+  const m = parseInt(process.env.SWITCHBOARD_MAX_DEPTH || "2", 10);
+  const dd = Number.isFinite(d) && d >= 0 ? d : 0;
+  const mm = Number.isFinite(m) && m >= 1 ? m : 2;
+  return dd < mm ? null : `delegation depth ${dd} at cap (max ${mm}); refusing to avoid an orchestration loop`;
+}
 
 function busDir(): string {
   return process.env.AGENT_BUS || join(process.cwd(), ".agentbus");
@@ -185,6 +197,36 @@ export const ClaudeBridgeMinimal: Plugin = async ({ client, directory }) => {
   const c = client as unknown as SdkClient;
   return {
     tool: {
+      ...(multiOrchEnabled()
+        ? {
+            delegate_claude: tool({
+              description:
+                "Blocking delegate to Claude Code headless (`claude -p`). Self-contained message, absolute paths. Honors delegation depth cap.",
+              args: {
+                message: tool.schema.string().describe("Self-contained task for Claude"),
+              },
+              async execute(args) {
+                const refusal = depthRefusal();
+                if (refusal) return refusal;
+                const dd = parseInt(process.env.SWITCHBOARD_DEPTH || "0", 10);
+                try {
+                  const r = spawnSync("claude", ["-p", "--output-format", "text", args.message], {
+                    encoding: "utf8",
+                    timeout: 600000,
+                    maxBuffer: 4 * 1024 * 1024,
+                    env: { ...process.env, SWITCHBOARD_DEPTH: String((Number.isFinite(dd) && dd >= 0 ? dd : 0) + 1) },
+                  });
+                  if (r.error) throw r.error;
+                  if (r.status !== 0) throw new Error(`claude exited ${r.status}`);
+                  const out = String(r.stdout || "(empty)");
+                  return out.length <= 8000 ? out : out.slice(0, 8000) + "\n\n[... truncated]";
+                } catch (err) {
+                  return `delegate_claude failed: ${(err as Error).message}`;
+                }
+              },
+            }),
+          }
+        : {}),
       message_claude: tool({
         description:
           "Send an async message via the shared agent message bus. Default route is the paired Claude Code session (reads when free). With `to` set to a Claude session id (from presence) or a worker session id/directory (or \"*\"), routes there instead. If an incoming message names a reply-to session id, answer THAT session with `to` set. Always one-way and async: do NOT wait for a reply in the same turn.",

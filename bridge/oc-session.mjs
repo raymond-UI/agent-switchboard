@@ -7,6 +7,7 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { childDepthEnv } from "./env.mjs";
 
 export class OcSession {
   constructor(opts = {}) {
@@ -84,7 +85,7 @@ export class OcSession {
       try {
         child = spawn(this.ocBin, ["serve", "--port", String(port)], {
           cwd: this.ocCwd,
-          env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
+          env: { ...childDepthEnv(process.env), OPENCODE_SERVER_PASSWORD: password },
           stdio: ["ignore", "pipe", "pipe"],
         });
       } catch (err) {

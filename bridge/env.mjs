@@ -25,6 +25,35 @@ export function resolveConfig(env = process.env) {
   };
 }
 
+// ---- Multi-orchestrator depth guard ----
+// Delegation depth travels in env across every spawn boundary (bridge ⭢ pi,
+// bridge ⭢ opencode serve, extension ⭢ claude/opencode subprocess). Each
+// delegate tool refuses at the cap so A⭢B⭢A loops die with a clear error
+// instead of burning money forever. Gated by SWITCHBOARD_MULTI_ORCH.
+export function multiOrchEnabled(env = process.env) {
+  return ["1", "true", "yes"].includes(String(env.SWITCHBOARD_MULTI_ORCH || "").toLowerCase());
+}
+
+export function maxDepth(env = process.env) {
+  const n = parseInt(env.SWITCHBOARD_MAX_DEPTH || "2", 10);
+  return Number.isFinite(n) && n >= 1 ? n : 2;
+}
+
+export function currentDepth(env = process.env) {
+  const n = parseInt(env.SWITCHBOARD_DEPTH || "0", 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+export function depthCheck(env = process.env) {
+  const d = currentDepth(env);
+  const m = maxDepth(env);
+  return d < m ? null : `delegation depth ${d} at cap (max ${m}); refusing to avoid an orchestration loop`;
+}
+
+export function childDepthEnv(env = process.env) {
+  return { ...env, SWITCHBOARD_DEPTH: String(currentDepth(env) + 1) };
+}
+
 export function busFile(agentBus) {
   return path.join(agentBus, "to-claude.jsonl");
 }
