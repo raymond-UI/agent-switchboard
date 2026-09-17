@@ -5,14 +5,31 @@ worker and an **OpenCode** worker: it delegates whole tasks, nudges running
 sessions, and hears back — every pair messageable, nothing copy-pasted
 between terminals.
 
-## Try it without cloning
+## Setup — pick one
+
+**A. Just try it** (taste, may break later when npm prunes its cache):
 
 ```bash
 npx -y -p github:raymond-UI/agent-switchboard switchboard-install
 ```
 
-That installs the worker plugins, registers the bridge, and prints the one
-Stop-hook snippet to add to your Claude settings. No checkout needed.
+**B. Use it** (durable, still no clone) — **this is the normal path**:
+
+```bash
+npm install -g github:raymond-UI/agent-switchboard
+switchboard-install
+```
+
+**C. Hack on it:** `git clone https://github.com/raymond-UI/agent-switchboard`, then `node scripts/install.mjs`.
+
+All three install the worker plugins, register the bridge, and print the
+one Stop-hook snippet for your Claude settings. You need: Node.js ≥ 18,
+the [Claude Code](https://code.claude.com) CLI, and whichever workers you
+want ([pi](https://pi.dev), [OpenCode](https://opencode.ai) v1.18+).
+Windows works identically (forward slashes in settings paths).
+
+It worked if: `agent_sessions` lists your workers, and `pi_inbox` answers
+without errors. Then hand a worker something tiny with absolute paths.
 
 ## The loop (30 seconds)
 
@@ -28,19 +45,21 @@ Stop-hook snippet to add to your Claude settings. No checkout needed.
 Instructions to workers must be self-contained with **absolute paths** —
 they can't see your Claude conversation.
 
-## Install properly
+## Upgrading
+
+Re-run whatever installed it — it reinstalls plugins, re-registers MCP, and
+reprints the hook snippet. Idempotent; running sessions keep their loaded
+copies, new sessions pick everything up:
 
 ```bash
-git clone https://github.com/raymond-UI/agent-switchboard
-cd agent-switchboard
-node scripts/install.mjs
+switchboard-install          # paths B and C (C: `node scripts/install.mjs`)
+npx -y -p github:raymond-UI/agent-switchboard switchboard-install   # path A
 ```
 
-Prerequisites: Node.js ≥ 18, the [Claude Code](https://code.claude.com) CLI,
-and whichever workers you want ([pi](https://pi.dev),
-[OpenCode](https://opencode.ai) v1.18+). Zero npm dependencies.
-Windows works the same way (forward slashes in settings paths; worktree
-script wants git-bash). Tested: pi 0.85.0, OpenCode 1.18.30, Node 20/22/24.
+No migration steps between versions so far; if one ever lands, it will be
+announced at the top of this section.
+
+Tested: pi 0.85.0, OpenCode 1.18.30, Node 20/22/24 (CI × ubuntu/macos/windows).
 
 ## Across machines (remote Claude)
 

@@ -11,6 +11,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+// npx runs from a cache dir the package manager may prune at any time. The
+// MCP registration below would point at that transient path and silently
+// break later. Detect it and steer toward a durable install instead.
+const EPHEMERAL = /[\\/]\.npm[\\/]_npx[\\/]|[\\/]npm[\\/]_cacache[\\/]/.test(HERE);
 const HOME = os.homedir();
 const isWindows = process.platform === "win32";
 
@@ -74,6 +78,13 @@ console.log("Add this Stop hook to your Claude settings (use / forward slashes o
 console.log(JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: hook }] }] } }, null, 2));
 console.log(`AGENT_BUS=${agentBus} (export/set identically on all sides when directories differ)`);
 console.log("New worker sessions pick up plugin changes; running sessions keep their loaded copy.");
+if (EPHEMERAL) {
+  console.log("");
+  console.log("WARNING: you ran from an npx cache (" + HERE + ").");
+  console.log("The MCP registration above points there and will break when npm prunes it.");
+  console.log("For durable use (no clone needed): npm install -g github:raymond-UI/agent-switchboard");
+  console.log("then re-run: switchboard-install");
+}
 
 // Remote Claude (cross-machine): mint a bearer token and print the client
 // config. The bridge serves it with `node bridge/launcher.mjs serve --port <p>`
