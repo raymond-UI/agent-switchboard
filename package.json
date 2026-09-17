@@ -7,7 +7,8 @@
   "bin": {
     "switchboard": "./bridge/mcp-server.mjs",
     "switchboard-inbox": "./hooks/pi-inbox.mjs",
-    "switchboard-install": "./scripts/install.mjs"
+    "switchboard-install": "./scripts/install.mjs",
+    "switchboard-serve": "./bridge/http-server.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"

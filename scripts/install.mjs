@@ -43,16 +43,11 @@ try {
   console.log(`opencode plugin NOT installed (${err.message}); copy opencode-plugin/claude-bridge.ts to your plugins dir manually.`);
 }
 
-const launcher = path.join(HERE, "bridge", "launcher.mjs");
-// Unix wraps with `env -u` against poisoned host preloads (e.g. a multiplexer
-// pointing NODE_OPTIONS at a purged temp file); Windows has no `env` binary
-// and no such preload problem, so invoke node directly there.
-const hook = isWindows
-  ? ["node", launcher, "hook"].join(" ")
-  : ["env", "-u", "NODE_OPTIONS", "node", launcher, "hook"].join(" ");
-const mcpCmd = (args) => isWindows
-  ? ["node", launcher, "mcp", ...args]
-  : ["env", "-u", "NODE_OPTIONS", "node", launcher, "mcp", ...args];
+// Bin-name invocation (PATH-resolved): immune to Node upgrades, npm paths,
+// and repo moves. Unix prefixes `env -u` against poisoned host preloads
+// (multiplexer NODE_OPTIONS pointing at purged tmp); Windows has no `env`.
+const hook = isWindows ? "switchboard-inbox" : "env -u NODE_OPTIONS switchboard-inbox";
+const mcpCmd = () => isWindows ? ["switchboard"] : ["env", "-u", "NODE_OPTIONS", "switchboard"];
 let hasClaude = false;
 try {
   execFileSync("claude", ["--version"], { stdio: "ignore" });
@@ -63,15 +58,23 @@ if (hasClaude) {
     execFileSync("claude", ["mcp", "remove", "switchboard", "-s", "user"], { stdio: "ignore" });
   } catch {}
   try {
-    execFileSync("claude", ["mcp", "add", "switchboard", "-s", "user", "--", ...mcpCmd([])], { stdio: "inherit" });
+    execFileSync("claude", ["mcp", "add", "switchboard", "-s", "user", "--", ...mcpCmd()], { stdio: "inherit" });
     console.log("MCP registered.");
   } catch {
     console.log("MCP registration failed; register manually:");
-    console.log(`  claude mcp add switchboard -s user -- ${mcpCmd([]).join(" ")}`);
+    console.log(`  claude mcp add switchboard -s user -- ${mcpCmd().join(" ")}`);
   }
 } else {
   console.log("claude CLI not found; register MCP manually:");
-  console.log(`  claude mcp add switchboard -s user -- ${mcpCmd([]).join(" ")}`);
+  console.log(`  claude mcp add switchboard -s user -- ${mcpCmd().join(" ")}`);
+}
+
+// Non-technical safety net: bins must resolve via PATH or nothing above works.
+try {
+  execFileSync(isWindows ? "where" : "which", ["switchboard-inbox"], { stdio: "ignore" });
+} catch {
+  console.log("WARNING: the npm global bin dir is not on your PATH, so Claude cannot find `switchboard*`.");
+  console.log("Fix: add it to PATH (npm prefix -g + /bin), then re-run switchboard-install.");
 }
 
 console.log("Add this Stop hook to your Claude settings (use / forward slashes on Windows):");
@@ -92,7 +95,7 @@ if (EPHEMERAL) {
 const token = randomBytes(24).toString("hex");
 console.log("");
 console.log("Remote Claude (optional, LAN): serve the bridge, then connect:");
-console.log(`  SWITCHBOARD_TOKEN=${token} node ${path.join(HERE, "bridge", "launcher.mjs")} serve --port 4598`);
+console.log(`  SWITCHBOARD_TOKEN=${token} switchboard-serve --port 4598`);
 console.log("  claude mcp add --transport http switchboard-remote http://<this-host>:4598/mcp --header \"Authorization: Bearer " + token + "\"");
-console.log("  Hook: AGENT_BUS_REMOTE=http://<this-host>:4598 node " + path.join(HERE, "bridge", "launcher.mjs") + " hook");
+console.log("  Hook: AGENT_BUS_REMOTE=http://<this-host>:4598 " + (isWindows ? "switchboard-inbox" : "env -u NODE_OPTIONS switchboard-inbox"));
 console.log("  (bind LAN via SWITCHBOARD_HOST; Tailscale outside the LAN; token shown once, keep it secret)");
