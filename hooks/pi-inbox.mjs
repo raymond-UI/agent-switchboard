@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-// Stop hook: delivers unread bus messages into the live Claude Code session.
-// (PRD 6.5) Node only. Exit 0 silently in every case except block-with-messages.
+// Stop hook: thin CLI over bridge/hook-core.mjs (shared with the HTTP
+// /inbox endpoint). Node only. Exit 0 silently except block-with-messages.
+// Remote mode: AGENT_BUS_REMOTE=http://host:port asks the bridge instead.
 
-import fs from "node:fs";
-import path from "node:path";
-import { resolveConfig, hookCounterFile, hookWarnedFile } from "../bridge/env.mjs";
-import { readUnread, drainUnread, readBusInfo } from "../bridge/bus.mjs";
+import { resolveConfig } from "../bridge/env.mjs";
+import { decideInbox } from "../bridge/hook-core.mjs";
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -14,51 +13,31 @@ function readStdin() {
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (c) => (data += c));
     process.stdin.on("end", () => resolve(data));
-    // If no pipe, resolve quickly.
     setTimeout(() => resolve(data), 100);
   });
 }
 
-function readCounter(agentBus) {
+async function remoteDecide(remote, payload) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  if (typeof timer.unref === "function") timer.unref();
   try {
-    return JSON.parse(fs.readFileSync(hookCounterFile(agentBus), "utf8")).count || 0;
+    const headers = { "Content-Type": "application/json" };
+    const token = process.env.SWITCHBOARD_TOKEN;
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(remote.replace(/\/$/, "") + "/inbox", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ session_id: payload.session_id || payload.sessionId || null }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return null;
+    return await res.json();
   } catch {
-    return 0;
+    return null; // fail-open: never break Claude on network trouble
+  } finally {
+    clearTimeout(timer);
   }
-}
-function writeCounter(agentBus, count) {
-  try {
-    fs.mkdirSync(agentBus, { recursive: true });
-    fs.writeFileSync(hookCounterFile(agentBus), JSON.stringify({ count }) + "\n");
-  } catch {}
-}
-function alreadyWarned(agentBus, key) {
-  try {
-    const j = JSON.parse(fs.readFileSync(hookWarnedFile(agentBus), "utf8"));
-    return j[key] === true;
-  } catch {
-    return false;
-  }
-}
-function markWarned(agentBus, key) {
-  try {
-    fs.mkdirSync(agentBus, { recursive: true });
-    let j = {};
-    try {
-      j = JSON.parse(fs.readFileSync(hookWarnedFile(agentBus), "utf8"));
-    } catch {}
-    j[key] = true;
-    fs.writeFileSync(hookWarnedFile(agentBus), JSON.stringify(j));
-  } catch {}
-}
-
-function formatRecords(records) {
-  return records
-    .map((r) => {
-      const paths = r.paths && r.paths.length ? `\nFiles: ${r.paths.join(", ")}` : "";
-      return `[${r.kind}] ${r.text}${paths}`;
-    })
-    .join("\n---\n");
 }
 
 async function main() {
@@ -69,97 +48,26 @@ async function main() {
   } catch {
     process.exit(0);
   }
-  // Already inside a blocked stop: exit immediately (rail 1).
   if (payload.stop_hook_active) process.exit(0);
 
-  const config = resolveConfig();
-  const agentBus = config.agentBus;
-
-  // Claude-side presence: this hook knows its own session id (payload) while
-  // the bridge/MCP side never does. Heartbeat so workers can address THIS
-  // Claude session via message_claude {to}. Stale entries die by pid check
-  // in listPresence; no shutdown hook exists to clean up after ourselves.
-  const mySessionId = payload.session_id || payload.sessionId || null;
-  if (mySessionId) {
-    try {
-      fs.mkdirSync(path.join(agentBus, "presence"), { recursive: true });
-      fs.writeFileSync(
-        path.join(agentBus, "presence", `claude-${String(mySessionId).replace(/[^A-Za-z0-9_-]/g, "_")}.json`),
-        JSON.stringify({
-          sessionId: String(mySessionId),
-          agent: "claude",
-          sessionFile: null,
-          cwd: payload.cwd || process.env.CLAUDE_PROJECT_DIR || null,
-          name: "claude-code",
-          pid: process.ppid || process.pid,
-          ts: new Date().toISOString(),
-        }, null, 2) + "\n"
-      );
-    } catch {}
-  }
-
-  // Split-bus detection (PRD 7.5): compare hook-resolved path to bridge's .bus-info.json.
-  let mismatchNote = null;
-  try {
-    const info = readBusInfo(agentBus);
-    if (info && info.busPath && path.resolve(info.busPath) !== path.resolve(agentBus)) {
-      const key = `mismatch:${info.busPath}`;
-      if (!alreadyWarned(agentBus, key)) {
-        mismatchNote =
-          `WARNING: AGENT_BUS mismatch. Bridge writes to ${info.busPath} but this hook reads ${path.resolve(agentBus)}. ` +
-          `Set AGENT_BUS to the same directory on both sides or messages will vanish.`;
-        markWarned(agentBus, key);
-      }
+  const remote = process.env.AGENT_BUS_REMOTE;
+  if (remote) {
+    const ans = await remoteDecide(remote, payload);
+    if (ans && ans.type === "block" && ans.reason) {
+      process.stdout.write(JSON.stringify({ decision: "block", reason: ans.reason }) + "\n");
     }
-  } catch {
-    // No .bus-info.json yet: bridge hasn't started. Not fatal.
+    process.exit(0);
   }
 
-  // Address filter: a record addresses me when it has no target, targets
-  // everyone, or names my session id. Without a session id (old payloads)
-  // everything matches (legacy first-come behavior).
-  const forMe = (r) => !mySessionId || !r || !r.to || r.to === "*" || r.to === mySessionId;
-  let unread = [];
+  const config = resolveConfig();
   try {
-    // Ticket results are pull-only (pi_inbox): they name a ticket only its
-    // launching session knows. Pushing them through every session's Stop
-    // hook sprays async results into unrelated sessions sharing one bus.
-    unread = readUnread(agentBus).filter((r) => (!r || !r.ticket) && forMe(r));
-  } catch {
-    process.exit(0);
-  }
-
-  const maxBlocks = config.maxConsecutiveBlocks;
-  let count = readCounter(agentBus);
-
-  const hasMessages = unread.length > 0;
-  const hasWarning = !!mismatchNote;
-
-  if (!hasMessages && !hasWarning) {
-    // Nothing to deliver: reset counter.
-    if (count !== 0) writeCounter(agentBus, 0);
-    process.exit(0);
-  }
-  if (count >= maxBlocks) {
-    // Loop cap (rail 2). Do not block; leave messages for pi_inbox poll.
-    process.exit(0);
-  }
-  // Drain (marks read BEFORE emit) then block once with messages.
-  // Exclusions mirror the decision filter: ticket results stay unread for
-  // pull, and records addressed to OTHER Claude sessions stay for them.
-  const skip = (r) => !!(r && (r.ticket || (mySessionId && r.to && r.to !== "*" && r.to !== mySessionId)));
-  let drained = [];
-  try {
-    drained = hasMessages ? drainUnread(agentBus, process.env, skip) : [];
-  } catch {
-    process.exit(0);
-  }
-  const parts = [];
-  if (mismatchNote) parts.push(mismatchNote);
-  if (drained.length) parts.push(formatRecords(drained));
-  const reason = parts.join("\n---\n");
-  writeCounter(agentBus, count + 1);
-  process.stdout.write(JSON.stringify({ decision: "block", reason }) + "\n");
+    const ans = decideInbox(config.agentBus, payload, {
+      maxConsecutiveBlocks: config.maxConsecutiveBlocks,
+    });
+    if (ans.type === "block") {
+      process.stdout.write(JSON.stringify({ decision: "block", reason: ans.reason }) + "\n");
+    }
+  } catch {}
   process.exit(0);
 }
 

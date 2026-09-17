@@ -42,6 +42,25 @@ and whichever workers you want ([pi](https://pi.dev),
 Windows works the same way (forward slashes in settings paths; worktree
 script wants git-bash). Tested: pi 0.85.0, OpenCode 1.18.30, Node 20/22/24.
 
+## Across machines (remote Claude)
+
+The bridge can serve the same tools over HTTP so a Claude on another LAN
+machine drives local workers. Single-machine stdio stays the default.
+
+On the worker machine, get a token plus client config from the installer
+(`node scripts/install.mjs`), then serve:
+
+```bash
+SWITCHBOARD_TOKEN=<token> node bridge/launcher.mjs serve --port 4598
+```
+
+On the laptop: `claude mcp add --transport http switchboard-remote
+http://<host>:4598/mcp --header "Authorization: Bearer <token>"`, and point
+the Stop hook at the bridge (`AGENT_BUS_REMOTE=http://<host>:4598`).
+Transports, tickets, claims and presence are unchanged — only Claude's link
+go remote. Bind LAN via `SWITCHBOARD_HOST`; Tailscale outside the LAN.
+Full diagram: `docs/network-vision.html`.
+
 Two agents, one checkout: give each its own worktree
 (`./scripts/setup-worktree.sh /path/to/project`) or split folders by
 agreement. Two writers in one tree with no ownership split *will* stomp

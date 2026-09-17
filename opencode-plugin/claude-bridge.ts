@@ -6,6 +6,15 @@ import { tool } from "@opencode-ai/plugin";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, watch, writeFileSync, statSync } from "node:fs";
 import { join, resolve, relative, dirname, sep } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hostname } from "node:os";
+
+function hostName(): string | null {
+  try {
+    return hostname();
+  } catch {
+    return null;
+  }
+}
 
 function multiOrchEnabled(): boolean {
   return ["1", "true", "yes"].includes(String(process.env.SWITCHBOARD_MULTI_ORCH || "").toLowerCase());
@@ -69,7 +78,7 @@ function heartbeat(sessionID: string, directory: string): void {
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, String(sessionID).replace(/[^A-Za-z0-9_-]/g, "_") + ".json"),
-      JSON.stringify({ sessionId: sessionID, agent: "opencode-min", sessionFile: null, cwd: directory || null, name: "paired-mesh", pid: process.pid, ts: new Date().toISOString() }, null, 2) + "\n",
+      JSON.stringify({ sessionId: sessionID, agent: "opencode", host: hostName(), sessionFile: null, cwd: directory || null, name: "paired-mesh", pid: process.pid, ts: new Date().toISOString() }, null, 2) + "\n",
       "utf8"
     );
   } catch {}

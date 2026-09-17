@@ -4,8 +4,17 @@
 // documented as best-effort (see README limit note).
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { busFile } from "./env.mjs";
+import { busFile, hookCounterFile, hookWarnedFile } from "./env.mjs";
+
+function localHost() {
+  try {
+    return os.hostname();
+  } catch {
+    return null;
+  }
+}
 
 const VALID_KINDS = new Set(["result", "question", "warning", "fyi"]);
 // `from` is open-ended (pi, pi-user, opencode, claude) — routed, not validated.
@@ -125,6 +134,43 @@ export function atomicReplace(tmp, dest, attempts = 8, delayMs = 50) {
     }
   }
   throw last;
+}
+
+// Stop-hook consecutive-block counter + one-time-warning store. Shared by the
+// local hook and the HTTP inbox endpoint (same files, same semantics).
+export function readHookCounter(agentBus) {
+  try {
+    return JSON.parse(fs.readFileSync(hookCounterFile(agentBus), "utf8")).count || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function writeHookCounter(agentBus, count) {
+  try {
+    fs.mkdirSync(agentBus, { recursive: true });
+    fs.writeFileSync(hookCounterFile(agentBus), JSON.stringify({ count }) + "\n");
+  } catch {}
+}
+
+export function hookAlreadyWarned(agentBus, key) {
+  try {
+    return JSON.parse(fs.readFileSync(hookWarnedFile(agentBus), "utf8"))[key] === true;
+  } catch {
+    return false;
+  }
+}
+
+export function hookMarkWarned(agentBus, key) {
+  try {
+    fs.mkdirSync(agentBus, { recursive: true });
+    let j = {};
+    try {
+      j = JSON.parse(fs.readFileSync(hookWarnedFile(agentBus), "utf8"));
+    } catch {}
+    j[key] = true;
+    fs.writeFileSync(hookWarnedFile(agentBus), JSON.stringify(j));
+  } catch {}
 }
 
 export function keepConsumed(env = process.env) {
@@ -331,13 +377,14 @@ export function claimToPi(agentBus, recordId, myId) {
 
 // ---- Presence: which pi sessions are alive and paired ----
 
-export function writePresence(agentBus, { sessionId, sessionFile: sf, cwd, name, agent = "pi" }) {
+export function writePresence(agentBus, { sessionId, sessionFile: sf, cwd, name, agent = "pi", host = null }) {
   if (!sessionId) return null;
   const dir = presenceDir(agentBus);
   fs.mkdirSync(dir, { recursive: true });
   const rec = {
     sessionId,
     agent,
+    host: host || localHost(),
     sessionFile: sf || null,
     cwd: cwd || null,
     name: name || null,
@@ -379,6 +426,9 @@ export function listPresence(agentBus) {
     try {
       const rec = JSON.parse(fs.readFileSync(path.join(presenceDir(agentBus), f), "utf8"));
       rec.alive = pidAlive(rec.pid);
+      // Remote ids never share pid space: freshness is the cross-host signal.
+      const ts = Date.parse(rec.ts);
+      rec.freshMs = Number.isFinite(ts) ? Date.now() - ts : null;
       out.push(rec);
     } catch {
       // skip malformed presence files

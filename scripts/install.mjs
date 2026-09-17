@@ -4,6 +4,7 @@
 // prints the Stop-hook JSON. Idempotent; never touches running sessions.
 
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -73,3 +74,14 @@ console.log("Add this Stop hook to your Claude settings (use / forward slashes o
 console.log(JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: hook }] }] } }, null, 2));
 console.log(`AGENT_BUS=${agentBus} (export/set identically on all sides when directories differ)`);
 console.log("New worker sessions pick up plugin changes; running sessions keep their loaded copy.");
+
+// Remote Claude (cross-machine): mint a bearer token and print the client
+// config. The bridge serves it with `node bridge/launcher.mjs serve --port <p>`
+// (SWITCHBOARD_TOKEN set). Single-machine stdio stays the default.
+const token = randomBytes(24).toString("hex");
+console.log("");
+console.log("Remote Claude (optional, LAN): serve the bridge, then connect:");
+console.log(`  SWITCHBOARD_TOKEN=${token} node ${path.join(HERE, "bridge", "launcher.mjs")} serve --port 4598`);
+console.log("  claude mcp add --transport http switchboard-remote http://<this-host>:4598/mcp --header \"Authorization: Bearer " + token + "\"");
+console.log("  Hook: AGENT_BUS_REMOTE=http://<this-host>:4598 node " + path.join(HERE, "bridge", "launcher.mjs") + " hook");
+console.log("  (bind LAN via SWITCHBOARD_HOST; Tailscale outside the LAN; token shown once, keep it secret)");

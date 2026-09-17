@@ -11,7 +11,9 @@ if (which === "mcp") {
   await import("./mcp-server.mjs");
 } else if (which === "hook") {
   await import("../hooks/pi-inbox.mjs");
+} else if (which === "serve") {
+  await import("./http-server.mjs");
 } else {
-  process.stderr.write("usage: launcher.mjs <mcp|hook>\n");
+  process.stderr.write("usage: launcher.mjs <mcp|hook|serve>\n");
   process.exit(2);
 }

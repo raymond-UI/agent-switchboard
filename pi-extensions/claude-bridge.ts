@@ -7,6 +7,15 @@ import { Type } from "typebox";
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, watch, writeFileSync, unlinkSync, existsSync, statSync } from "node:fs";
 import { join, resolve, relative, dirname, sep } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hostname } from "node:os";
+
+function hostName(): string | null {
+  try {
+    return hostname();
+  } catch {
+    return null;
+  }
+}
 
 function busDir(): string {
   return (
@@ -360,6 +369,7 @@ export default function (pi: ExtensionAPI) {
       const rec = {
         sessionId: mySessionId,
         agent: "pi",
+        host: hostName(),
         sessionFile: myIds[0] || null,
         cwd: myIds[myIds.length - 1] || null,
         name: "paired-with-claude-code",
