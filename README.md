@@ -70,7 +70,7 @@ On the worker machine, get a token plus client config from the installer
 (`node scripts/install.mjs`), then serve:
 
 ```bash
-SWITCHBOARD_TOKEN=<token> node bridge/launcher.mjs serve --port 4598
+SWITCHBOARD_TOKEN=<token> switchboard-serve --port 4598
 ```
 
 On the laptop: `claude mcp add --transport http switchboard-remote
