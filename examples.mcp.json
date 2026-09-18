@@ -7,7 +7,9 @@
         "AGENT_BUS": "/abs/path/to/shared/.agentbus",
         "PI_CWD": "/abs/path/to/project-pi",
         "PI_NAME": "paired-with-claude-code",
-        "PI_ASK_TIMEOUT_MS": "900000"
+        "PI_ASK_TIMEOUT_MS": "900000",
+        "PI_ASYNC_TIMEOUT_MS": "14400000",
+        "OC_ASYNC_TIMEOUT_MS": "14400000"
       }
     }
   }

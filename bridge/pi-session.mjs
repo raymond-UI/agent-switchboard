@@ -34,6 +34,10 @@ export class PiSession {
     // serialize ask() calls so concurrent asks queue rather than error
     this.askChain = Promise.resolve();
     this.spawnError = null;
+    // Detach flag: a timed-out ask leaves the worker RUNNING (no auto-abort).
+    // The next ask drains this run before sending a new prompt so a stale
+    // settle can't be misattributed to the new prompt.
+    this.detachedRun = false;
   }
 
   // Bridge-owned pi never needs update checks/package telemetry at startup;
@@ -198,6 +202,7 @@ export class PiSession {
       case "agent_settled":
         this.isStreaming = false;
         this.settledCount += 1;
+        this.detachedRun = false;
         if (this.settledWaiters) {
           const w = this.settledWaiters;
           this.settledWaiters = null;
@@ -316,6 +321,19 @@ export class PiSession {
 
   async askInner(message, { timeoutMs }) {
     this.ensureStarted();
+    // Catch-up: the previous ask timed out detached and may still be running.
+    // Drain it BEFORE sending a new prompt so its settle can't resolve the
+    // new wait early (that would return the old run's text for the new task).
+    if (this.detachedRun) {
+      try {
+        await this.waitForSettled(timeoutMs, null);
+      } catch {
+        throw new Error(
+          `pi_ask failed: previous run still going after ${timeoutMs}ms (detached, no abort). Check pi_state; re-run pi_ask to wait again; pi_abort to kill.`
+        );
+      }
+      this.detachedRun = false;
+    }
     this.resetRunTelemetry();
     const streaming = this.isStreaming;
     const cmd = streaming
@@ -328,14 +346,17 @@ export class PiSession {
       accepted = true;
       await this.waitForSettled(timeoutMs, anchor);
     } catch (err) {
-      // On timeout: abort pi so bridge stays usable, then report.
-      if (/timed out waiting|timed out/i.test(err.message)) {
-        try {
-          await this.abort();
-        } catch {}
+      // On timeout: DETACH, don't abort. The worker keeps going so long jobs
+      // (e.g. an 11-min CI leg) survive the ceiling. Kill only via pi_abort.
+      if (/timed out/i.test(err.message)) {
+        this.detachedRun = true;
+        throw new Error(
+          `pi_ask timed out after ${timeoutMs}ms but worker still running (detached, no abort). Check pi_state; re-run pi_ask to wait again / queue follow-up; pi_abort to kill.`
+        );
       }
       throw new Error(`pi_ask failed: ${err.message}`);
     }
+    this.detachedRun = false;
     // Fetch final text + stats (best effort; never fail the ask on these).
     let text = null;
     let stats = null;
@@ -415,6 +436,8 @@ export class PiSession {
       model: st?.model ?? null,
       thinkingLevel: st?.thinkingLevel ?? null,
       isStreaming: st?.isStreaming ?? this.isStreaming,
+      detachedRun: this.detachedRun === true,
+      askTimeoutMs: this.defaultTimeoutMs,
       messageCount: st?.messageCount ?? stats?.totalMessages ?? null,
       pendingMessageCount: st?.pendingMessageCount ?? null,
       sessionFile: st?.sessionFile ?? stats?.sessionFile ?? this.sessionFile,

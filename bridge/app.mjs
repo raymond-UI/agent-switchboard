@@ -12,16 +12,27 @@ import { randomUUID } from "node:crypto";
 // Async delegation tickets (P1): fire-and-forget runs whose results land on
 // the bus (kind=result, ticket=<id>) for pi_inbox/Stop-hook delivery.
 // In-memory: a bridge restart loses running tickets (posted results persist).
-const tickets = new Map(); // id -> {agent, status, startedTs, message}
+const tickets = new Map(); // id -> {agent, status, startedTs, startedEpoch, timeoutMs, message}
 
-function launchTicket(agent, message, run) {
+// One-line nudge appended when a run eats most of its ceiling, so the
+// calling agent learns (with zero human) to ask for more time or go async
+// next time. Kept to one line: it rides every near-limit result.
+function nearCeilingHint(elapsedMs, ceilingMs, asyncTool) {
+  if (!Number.isFinite(elapsedMs) || !Number.isFinite(ceilingMs) || ceilingMs <= 0) return null;
+  if (elapsedMs < ceilingMs * 0.8) return null;
+  return `Hint: took ${Math.round(elapsedMs / 1000)}s of a ${Math.round(ceilingMs / 1000)}s ceiling; for longer legs pass timeoutMs (max 28800000) or use ${asyncTool} (4h default).`;
+}
+
+function launchTicket(agent, message, run, timeoutMs = null) {
   const id = `t-${randomUUID().slice(0, 8)}`;
-  tickets.set(id, { agent, status: "running", startedTs: new Date().toISOString(), message: String(message).slice(0, 200) });
+  const startedEpoch = Date.now();
+  tickets.set(id, { agent, status: "running", startedTs: new Date(startedEpoch).toISOString(), startedEpoch, timeoutMs, message: String(message).slice(0, 200) });
   run().then(
     (r) => {
       tickets.set(id, { ...tickets.get(id), status: "done" });
+      const hint = timeoutMs ? nearCeilingHint(Date.now() - startedEpoch, timeoutMs, agent === "opencode" ? "oc_ask_async" : "pi_ask_async") : null;
       appendMessage(config.agentBus, {
-        text: `Ticket ${id} settled.\n\n${capResult(formatAskResult(r), config.agentBus)}`,
+        text: `Ticket ${id} settled.\n\n${capResult(formatAskResult(r) + (hint ? `\n\n${hint}` : ""), config.agentBus)}`,
         kind: "result",
         from: agent,
         agent,
@@ -61,6 +72,17 @@ function log(...args) {
   process.stderr.write(args.map(String).join(" ") + "\n");
 }
 
+// Per-call timeout: lets one long leg (e.g. CI) ask for hours while normal
+// asks keep the 15-min default. Clamped so a typo can't hang the bridge for
+// days or pass a nonsense value to the transports.
+const MAX_TIMEOUT_MS = 28800000; // 8h
+function resolveTimeout(args, def) {
+  const v = args?.timeoutMs;
+  const n = typeof v === "string" ? parseInt(v, 10) : v;
+  if (!Number.isFinite(n) || n <= 0) return def;
+  return Math.min(Math.max(Math.floor(n), 1000), MAX_TIMEOUT_MS);
+}
+
 // Warn when a pi_ask message contains relative-looking paths and dirs differ.
 function relativePathWarning(message) {
   if (path.resolve(config.piCwd) === path.resolve(config.bridgeLaunchDir)) return null;
@@ -78,7 +100,7 @@ function relativePathWarning(message) {
 
 // One-line tool descriptions (details live in README): 12 tools ride on every
 // Claude turn, so each token here is a recurring tax.
-const PI_ASK_DESCRIPTION = `pi_ask(message): blocking delegate to paired pi (${config.piCwd}). Self-contained, ABSOLUTE paths (pi can't see this chat). Same session continues; pi_new_session for clean slate. Minutes. Details: README.`;
+const PI_ASK_DESCRIPTION = `pi_ask(message, timeoutMs?): blocking delegate to paired pi (${config.piCwd}). Self-contained, ABSOLUTE paths (pi can't see this chat). Same session continues; pi_new_session for clean slate. Minutes. timeoutMs (optional, default 900000, max 28800000): ask for longer on long legs e.g. CI. On timeout the worker KEEPS going (detached, no abort) — re-run pi_ask to wait again, pi_abort to kill. Details: README.`;
 
 const TOOLS = [
   {
@@ -86,7 +108,10 @@ const TOOLS = [
     description: PI_ASK_DESCRIPTION,
     inputSchema: {
       type: "object",
-      properties: { message: { type: "string", description: "Self-contained task for pi (absolute paths)." } },
+      properties: {
+        message: { type: "string", description: "Self-contained task for pi (absolute paths)." },
+        timeoutMs: { type: "number", description: "Optional wait ceiling in ms (default 900000, max 28800000). On timeout the worker keeps going detached." },
+      },
       required: ["message"],
     },
   },
@@ -111,21 +136,24 @@ const TOOLS = [
   },
   {
     name: "pi_state",
-    description: "pi_state(): pi model/streaming/tokens/context pressure (cost meter).",
+    description: "pi_state(): pi model/streaming/detachedRun/timeouts/tokens/context pressure (cost meter). detachedRun=true means a timed-out run is still going.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "oc_ask",
-    description: "oc_ask(message): blocking delegate to paired OpenCode worker. Self-contained, ABSOLUTE paths. Same session continues; oc_new_session for clean slate. Minutes. Details: README.",
+    description: "oc_ask(message, timeoutMs?): blocking delegate to paired OpenCode worker. Self-contained, ABSOLUTE paths. Same session continues; oc_new_session for clean slate. Minutes. timeoutMs optional (default 900000, max 28800000). On timeout the worker keeps going detached — re-run oc_ask to wait again, oc_abort to kill. Details: README.",
     inputSchema: {
       type: "object",
-      properties: { message: { type: "string", description: "Self-contained task for OpenCode (absolute paths)." } },
+      properties: {
+        message: { type: "string", description: "Self-contained task for OpenCode (absolute paths)." },
+        timeoutMs: { type: "number", description: "Optional wait ceiling in ms (default 900000, max 28800000)." },
+      },
       required: ["message"],
     },
   },
   {
     name: "oc_state",
-    description: "oc_state(): OpenCode session/tokens/cost.",
+    description: "oc_state(): OpenCode session/tokens/cost. Includes detachedRun + askTimeoutMs.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -149,25 +177,31 @@ const TOOLS = [
   },
   {
     name: "pi_ask_async",
-    description: "pi_ask_async(message): non-blocking pi delegate. Returns ticket id now; result arrives ONLY in YOUR pi_inbox under ticket=... (never via Stop hook, so it can't leak into a sibling session). Fan out N tasks, then collect. Lost if bridge restarts.",
+    description: "pi_ask_async(message, timeoutMs?): non-blocking pi delegate. Returns ticket id now; result arrives ONLY in YOUR pi_inbox under ticket=... (never via Stop hook, so it can't leak into a sibling session). Default ceiling 4h (PI_ASYNC_TIMEOUT_MS), override per call with timeoutMs. Fan out N tasks, then collect. Lost if bridge restarts.",
     inputSchema: {
       type: "object",
-      properties: { message: { type: "string", description: "Self-contained task for pi (absolute paths)." } },
+      properties: {
+        message: { type: "string", description: "Self-contained task for pi (absolute paths)." },
+        timeoutMs: { type: "number", description: "Optional wait ceiling in ms (default 14400000, max 28800000)." },
+      },
       required: ["message"],
     },
   },
   {
     name: "oc_ask_async",
-    description: "oc_ask_async(message): non-blocking OpenCode delegate. Returns ticket id now; result arrives ONLY in YOUR pi_inbox under ticket=... (never via Stop hook).",
+    description: "oc_ask_async(message, timeoutMs?): non-blocking OpenCode delegate. Returns ticket id now; result arrives ONLY in YOUR pi_inbox under ticket=... (never via Stop hook). Default ceiling 4h (OC_ASYNC_TIMEOUT_MS), override per call with timeoutMs.",
     inputSchema: {
       type: "object",
-      properties: { message: { type: "string", description: "Self-contained task for OpenCode (absolute paths)." } },
+      properties: {
+        message: { type: "string", description: "Self-contained task for OpenCode (absolute paths)." },
+        timeoutMs: { type: "number", description: "Optional wait ceiling in ms (default 14400000, max 28800000)." },
+      },
       required: ["message"],
     },
   },
   {
     name: "agent_tickets",
-    description: "agent_tickets(): list async ticket states (running/done/failed). Results themselves arrive via pi_inbox.",
+    description: "agent_tickets(): list async ticket states (running/done/failed) with ceilings. Results themselves arrive via pi_inbox.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -211,8 +245,12 @@ async function handleToolCall(name, args) {
           return errResult("pi_ask requires a 'message' string.");
         const warn = relativePathWarning(message);
         if (warn) log("[switchboard] WARN:", warn);
-        const r = await pi.ask(message, { timeoutMs: config.askTimeoutMs });
+        const ceiling = resolveTimeout(args, config.askTimeoutMs);
+        const t0 = Date.now();
+        const r = await pi.ask(message, { timeoutMs: ceiling });
         let out = capResult(formatAskResult(r), config.agentBus);
+        const hint = nearCeilingHint(Date.now() - t0, ceiling, "pi_ask_async");
+        if (hint) out += `\n\n${hint}`;
         if (warn) out += `\n\nWARNING: ${warn}`;
         return okResult(out);
       }
@@ -259,12 +297,16 @@ async function handleToolCall(name, args) {
         if (path.resolve(oc.ocCwd) !== path.resolve(config.bridgeLaunchDir)) {
           log(`[switchboard] WARN: OC_CWD (${oc.ocCwd}) differs from Claude's dir (${config.bridgeLaunchDir}). Prefer absolute paths.`);
         }
-        const r = await oc.ask(message, { timeoutMs: config.askTimeoutMs });
+        const ceiling = resolveTimeout(args, config.askTimeoutMs);
+        const t0 = Date.now();
+        const r = await oc.ask(message, { timeoutMs: ceiling });
         const parts = [r.text || "(empty)", ""];
         parts.push(`Tools used: ${r.toolsUsed.length ? r.toolsUsed.join(", ") : "(none)"}`);
         if (r.tokens) parts.push(`Tokens: ${JSON.stringify(r.tokens)}`);
         if (r.cost !== null && r.cost !== undefined) parts.push(`Cost: ${r.cost}`);
         if (r.sessionId) parts.push(`opencode session: ${r.sessionId}`);
+        const hint = nearCeilingHint(Date.now() - t0, ceiling, "oc_ask_async");
+        if (hint) parts.push("", hint);
         return okResult(capResult(parts.join("\n"), config.agentBus));
       }
       case "oc_state": {
@@ -289,21 +331,23 @@ async function handleToolCall(name, args) {
         const message = args?.message;
         if (!message || typeof message !== "string")
           return errResult("pi_ask_async requires a 'message' string.");
-        const id = launchTicket("pi", message, () => pi.ask(message, { timeoutMs: config.askTimeoutMs }));
-        return okResult(`Ticket ${id} queued on pi. Result arrives via pi_inbox (ticket=${id}); check agent_tickets for state.`);
+        const t = resolveTimeout(args, config.asyncTimeoutMs);
+        const id = launchTicket("pi", message, () => pi.ask(message, { timeoutMs: t }), t);
+        return okResult(`Ticket ${id} queued on pi (ceiling ${t}ms). Result arrives via pi_inbox (ticket=${id}); check agent_tickets for state.`);
       }
       case "oc_ask_async": {
         const message = args?.message;
         if (!message || typeof message !== "string")
           return errResult("oc_ask_async requires a 'message' string.");
-        const id = launchTicket("opencode", message, () => oc.ask(message, { timeoutMs: config.askTimeoutMs }));
-        return okResult(`Ticket ${id} queued on opencode. Result arrives via pi_inbox (ticket=${id}); check agent_tickets for state.`);
+        const ot = resolveTimeout(args, config.ocAsyncTimeoutMs ?? config.asyncTimeoutMs);
+        const id = launchTicket("opencode", message, () => oc.ask(message, { timeoutMs: ot }), ot);
+        return okResult(`Ticket ${id} queued on opencode (ceiling ${ot}ms). Result arrives via pi_inbox (ticket=${id}); check agent_tickets for state.`);
       }
       case "agent_tickets": {
         if (!tickets.size) return okResult("(no tickets)");
         return okResult(
           [...tickets.entries()]
-            .map(([id, t]) => `- ${id} ${t.agent} ${t.status} started=${t.startedTs} msg=${t.message}`)
+            .map(([id, t]) => `- ${id} ${t.agent} ${t.status} ceiling=${t.timeoutMs != null ? `${t.timeoutMs}ms` : "?"} started=${t.startedTs} msg=${t.message}`)
             .join("\n")
         );
       }

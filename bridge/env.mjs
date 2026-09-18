@@ -20,6 +20,11 @@ export function resolveConfig(env = process.env) {
     piName: env.PI_NAME || "paired-with-claude-code",
     piSessionDir: env.PI_SESSION_DIR || null,
     askTimeoutMs: parseInt(env.PI_ASK_TIMEOUT_MS || "900000", 10),
+    // Async tickets aren't blocking Claude, so they get a much longer
+    // ceiling (default 4h). Override with PI_ASYNC_TIMEOUT_MS /
+    // OC_ASYNC_TIMEOUT_MS. Per-call timeoutMs (on the tool) beats both.
+    asyncTimeoutMs: parseInt(env.PI_ASYNC_TIMEOUT_MS || "14400000", 10),
+    ocAsyncTimeoutMs: parseInt(env.OC_ASYNC_TIMEOUT_MS || env.PI_ASYNC_TIMEOUT_MS || "14400000", 10),
     maxConsecutiveBlocks: parseInt(env.PI_MAX_CONSECUTIVE_BLOCKS || "3", 10),
     bridgeLaunchDir: process.cwd(),
   };

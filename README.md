@@ -35,8 +35,8 @@ without errors. Then hand a worker something tiny with absolute paths.
 
 | You want to… | You use | What happens |
 |---|---|---|
-| Hand a worker a task and wait | `pi_ask` / `oc_ask` | Blocks until it settles; returns text + tools used + cost |
-| Hand over N tasks at once | `pi_ask_async` / `oc_ask_async` | Ticket id now; each result lands in `pi_inbox` |
+| Hand a worker a task and wait | `pi_ask` / `oc_ask` | Blocks until it settles; returns text + tools used + cost. `timeoutMs` overrides the 15-min default (max 8h). On timeout the worker **keeps going** (detached, no abort) — re-run the ask to wait again, `*_abort` to kill. |
+| Hand over N tasks at once | `pi_ask_async` / `oc_ask_async` | Ticket id now; each result lands in `pi_inbox`. Default ceiling 4h (`PI_ASYNC_TIMEOUT_MS` / `OC_ASYNC_TIMEOUT_MS`), overridable per call. |
 | Nudge a running session | `agent_send` (address from `agent_sessions`) | Lands in its conversation in ~2s |
 | Hear back | `pi_inbox` (or the Stop hook, while working) | Results, questions, warnings |
 | Fresh context for a new task | `pi_new_session` / `oc_new_session` | Old history dropped, unrecoverable |

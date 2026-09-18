@@ -28,6 +28,9 @@ export class OcSession {
     this.sessionId = null;
     this.askChain = Promise.resolve();
     this.lastNotices = [];
+    // Detach flag (mirrors PiSession): a timed-out ask leaves the run GOING.
+    // Next ask drains it before prompting so settles can't be misattributed.
+    this.detachedRun = false;
   }
 
   authHeaders() {
@@ -161,18 +164,94 @@ export class OcSession {
 
   async askInner(message, { timeoutMs }) {
     const sid = await this.ensureSession();
+    // Catch-up: drain a previously detached run before sending a new prompt.
+    // Without this, the old run's session.idle would resolve the new wait
+    // early and return the old run's text for the new task.
+    if (this.detachedRun) {
+      try {
+        await this.waitForIdle(sid, timeoutMs);
+      } catch {
+        throw new Error(
+          `oc_ask failed: previous run still going after ${timeoutMs}ms (detached, no abort). Check oc_state; re-run oc_ask to wait again; oc_abort to kill.`
+        );
+      }
+      this.detachedRun = false;
+    }
     try {
       // Subscribe BEFORE prompting: a fast run could otherwise settle
       // before the event stream is up (same race class as pi agent_start).
       await this.promptAndWait(sid, message, timeoutMs);
     } catch (err) {
+      // On timeout: DETACH, don't abort. Long jobs survive the ceiling;
+      // kill only via oc_abort.
       if (/timed out/i.test(err.message)) {
-        try { await this.abort(); } catch {}
-        throw new Error(`oc_ask failed: ${err.message}`);
+        this.detachedRun = true;
+        throw new Error(
+          `oc_ask timed out after ${timeoutMs}ms but worker still running (detached, no abort). Check oc_state; re-run oc_ask to wait again; oc_abort to kill.`
+        );
       }
       throw new Error(`oc_ask failed: ${err.message}`);
     }
+    this.detachedRun = false;
     return this.collectResult(sid);
+  }
+
+  /** Wait for the next session.idle WITHOUT prompting (catch-up drain). */
+  waitForIdle(sid, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const deadline = Date.now() + timeoutMs;
+      let settled = false;
+      let stream = null;
+      let sseCtrl = null;
+      const killTimer = setTimeout(() => finish(new Error(`timed out waiting for opencode to settle after ${timeoutMs}ms`)), timeoutMs + 5000);
+      if (typeof killTimer.unref === "function") killTimer.unref();
+      const finish = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(killTimer);
+        try { stream?.cancel().catch(() => {}); } catch {}
+        try { sseCtrl?.abort(); } catch {}
+        err ? reject(err) : resolve();
+      };
+      (async () => {
+        try {
+          sseCtrl = new AbortController();
+          const res = await fetch(this.baseUrl + "/event", {
+            headers: { Accept: "text/event-stream", ...this.authHeaders() },
+            signal: sseCtrl.signal,
+          });
+          if (!res.ok || !res.body) throw new Error(`event stream -> ${res.status}`);
+          stream = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          for (;;) {
+            if (Date.now() > deadline) {
+              finish(new Error(`timed out waiting for opencode to settle after ${timeoutMs}ms`));
+              return;
+            }
+            const { value, done: streamDone } = await stream.read();
+            if (streamDone) { finish(new Error("event stream closed before settle")); return; }
+            buf += decoder.decode(value, { stream: true });
+            let idx;
+            while ((idx = buf.indexOf("\n")) !== -1) {
+              const line = buf.slice(0, idx).trim();
+              buf = buf.slice(idx + 1);
+              if (!line.startsWith("data:")) continue;
+              try {
+                const ev = JSON.parse(line.slice(5));
+                if (ev?.type === "session.idle" && ev?.properties?.sessionID === sid) {
+                  finish(null);
+                  return;
+                }
+              } catch {}
+            }
+          }
+        } catch (err) {
+          if (settled || err?.name === "AbortError") return;
+          finish(err);
+        }
+      })();
+    });
   }
 
   promptAndWait(sid, message, timeoutMs) {
@@ -303,6 +382,8 @@ export class OcSession {
     return {
       agent: "opencode",
       sessionId: this.sessionId,
+      detachedRun: this.detachedRun === true,
+      askTimeoutMs: this.defaultTimeoutMs,
       directory: sess?.location?.directory || sess?.directory || this.ocCwd,
       title: sess?.title || null,
       tokens: sess?.tokens ?? null,
