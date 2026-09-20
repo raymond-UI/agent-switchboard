@@ -65,9 +65,13 @@ export function decideInbox(agentBus, payload, { maxConsecutiveBlocks = 3 } = {}
   } catch {}
 
   const forMe = (r) => !mySessionId || !r || !r.to || r.to === "*" || r.to === mySessionId;
+  // Async results are routed to the dispatcher (their `to`) IF the
+  // dispatcher bound them. Without `to`, results stay pull-only so a
+  // stale or unstamped ticket can't spray into a sibling session.
+  const includeTicket = (r) => r && r.ticket && r.to && (r.to === mySessionId || r.to === "*");
   let unread = [];
   try {
-    unread = readUnread(agentBus).filter((r) => (!r || !r.ticket) && forMe(r));
+    unread = readUnread(agentBus).filter((r) => (!r || !r.ticket) && forMe(r) || includeTicket(r));
   } catch {
     return { type: "silent" };
   }
@@ -83,7 +87,17 @@ export function decideInbox(agentBus, payload, { maxConsecutiveBlocks = 3 } = {}
   if (count >= maxConsecutiveBlocks) {
     return { type: "silent" };
   }
-  const skip = (r) => !!(r && (r.ticket || (mySessionId && r.to && r.to !== "*" && r.to !== mySessionId)));
+  const skip = (r) => {
+    if (!r) return true;
+    if (r.ticket) {
+      // Tickets: skip UNLESS addressed to this session (or broadcast "*").
+      // A non-addressed ticket stays pull-only (current behavior preserved).
+      if (!mySessionId) return true;
+      return !(r.to === mySessionId || r.to === "*");
+    }
+    // Non-ticket records: skip if addressed to a different session.
+    return !!mySessionId && r.to && r.to !== "*" && r.to !== mySessionId;
+  };
   let drained = [];
   try {
     drained = hasMessages ? drainUnread(agentBus, process.env, skip) : [];

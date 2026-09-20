@@ -179,11 +179,12 @@ export function keepConsumed(env = process.env) {
 }
 
 /**
- * Drain unread messages. Marks read:true BEFORE returning (crash-after-emit
- * must not replay forever). Compacts: drops consumed (read) records past a
- * watermark (BUS_KEEP_CONSUMED, default 200 kept as audit trail) so the file
- * can't grow forever. Early-exits without touching the file when nothing is
- * unread. Returns the unread records.
+ * Drain unread messages. Marks ONLY the records it emits as read:true
+ * (so an excluded record stays unread and a sibling session can still
+ * see it). Compacts: drops consumed (read) records past a watermark
+ * (BUS_KEEP_CONSUMED, default 200 kept as audit trail) so the file
+ * can't grow forever. Early-exits without touching the file when nothing
+ * is unread. Returns the unread records.
  */
 export function drainUnread(agentBus, env = process.env, exclude = null) {
   const file = busFile(agentBus);
@@ -208,11 +209,14 @@ export function drainUnread(agentBus, env = process.env, exclude = null) {
     }
   }
   if (unread.length === 0) return [];
-  // Mark read before emit.
+  // Mark read BEFORE emit, but ONLY for records we are about to emit.
+  // Anything excluded by the caller stays unread so a sibling session's
+  // next hook call can pick it up (session-scoped routing requires this).
+  const emitIds = new Set(unread.map((r) => r));
   for (const rec of records) {
-    if (rec && rec.read !== true) rec.read = true;
+    if (rec && rec.read !== true && emitIds.has(rec)) rec.read = true;
   }
-  // Compact: keep all unread (just marked, none left) + newest consumed.
+  // Compact: keep unread (still-unread excluded records + any leftovers) + newest consumed.
   const keep = keepConsumed(env);
   const consumed = records.filter((r) => r && r.read === true);
   const kept = consumed.slice(-keep);

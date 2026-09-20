@@ -36,7 +36,7 @@ without errors. Then hand a worker something tiny with absolute paths.
 | You want to… | You use | What happens |
 |---|---|---|
 | Hand a worker a task and wait | `pi_ask` / `oc_ask` | Blocks until it settles; returns text + tools used + cost. `timeoutMs` overrides the 15-min default (max 8h). On timeout the worker **keeps going** (detached, no abort) — re-run the ask to wait again, `*_abort` to kill. |
-| Hand over N tasks at once | `pi_ask_async` / `oc_ask_async` | Ticket id now; each result lands in `pi_inbox`. Default ceiling 4h (`PI_ASYNC_TIMEOUT_MS` / `OC_ASYNC_TIMEOUT_MS`), overridable per call. |
+| Hand over N tasks at once | `pi_ask_async` / `oc_ask_async` | Ticket id now. Result lands in YOUR pi_inbox AND fires the Stop hook for the Claude session that dispatched it (siblings stay pull-only). Default ceiling 4h (`PI_ASYNC_TIMEOUT_MS` / `OC_ASYNC_TIMEOUT_MS`), overridable per call. |
 | Nudge a running session | `agent_send` (address from `agent_sessions`) | Lands in its conversation in ~2s |
 | Hear back | `pi_inbox` (or the Stop hook, while working) | Results, questions, warnings |
 | Fresh context for a new task | `pi_new_session` / `oc_new_session` | Old history dropped, unrecoverable |
@@ -92,12 +92,20 @@ each other — the tooling detects, it doesn't merge.
 2. **New sessions don't inherit backlog.** Workers only receive messages sent
    after they were born (exact id/file addressing bypasses). Re-brief instead
    of relying on history.
-3. **Idle Claude sessions can't be pushed to.** The Stop hook fires on
+3. **Async results are pull-only... with one new exception.** A `pi_ask_async` /
+   `oc_ask_async` ticket result lands in `pi_inbox` for everyone AND fires the
+   Stop hook for the Claude session that dispatched it (multi-agent safe: each
+   Claude writes its own dispatcher sidecar, the bridge stamps the ticket at
+   dispatch time, the hook routes by exact match). Tickets that were never
+   stamped (no PreToolUse hook, or different tool) stay pull-only.
+4. **Idle Claude sessions can't be pushed to.** The Stop hook fires on
    transitions; a parked session needs one nudge (`check pi_inbox`) or a
    desktop notification — there is no timer hook. Nothing is ever lost: the
    bus is durable, pull anytime.
-4. **Async results are pull-only.** Ticket results skip the Stop hook so they
-   can't spray into a sibling session — collect by ticket id in `pi_inbox`.
+4. **Async results are pull-only by default.** Ticket results skip the Stop
+   hook so they can't spray into a sibling session — collect by ticket id in
+   `pi_inbox`. (If the `PreToolUse` dispatcher hook is installed, async results
+   ALSO fire the Stop hook for the Claude session that dispatched them.)
 5. **The bus is trusted.** Anyone who can write to `AGENT_BUS` can whisper to
    your agents. Same bar as project files. Bus dirs auto-ignore themselves
    in enclosing git repos.

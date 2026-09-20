@@ -2,6 +2,8 @@
 // sessions spawns nothing (lazy), no stdin handling here. Shared by the
 // stdio MCP server, the HTTP face, and tests.
 
+import fs from "node:fs";
+import path from "node:path";
 import { PiSession } from "./pi-session.mjs";
 import { OcSession } from "./oc-session.mjs";
 import { resolveConfig } from "./env.mjs";
@@ -23,37 +25,83 @@ function nearCeilingHint(elapsedMs, ceilingMs, asyncTool) {
   return `Hint: took ${Math.round(elapsedMs / 1000)}s of a ${Math.round(ceilingMs / 1000)}s ceiling; for longer legs pass timeoutMs (max 28800000) or use ${asyncTool} (4h default).`;
 }
 
+// Find the PreToolUse dispatcher sidecar matching this dispatch and delete
+// it. Returns the Claude session id on a successful match, else null.
+// Multi-agent safe: every Claude writes its OWN sidecar (named after its
+// session id), and the bridge consumes only the one whose tool name + a
+// short prefix of the message matches. A slow dispatch that fires after
+// another Claude's PreToolUse won't steal the wrong sidecar.
+function consumeDispatcher(agentBus, toolName, message) {
+  if (!agentBus) return null;
+  let files;
+  try { files = fs.readdirSync(agentBus); } catch { return null; }
+  const prefix = "dispatcher-";
+  // Look for fresh sidecars (within 30s — generous; PreToolUse fires
+  // immediately before the tool call, so the sidecar is always recent).
+  const cutoff = Date.now() - 30000;
+  let best = null; // {file, ts}
+  for (const f of files) {
+    if (!f.startsWith(prefix) || !f.endsWith(".json")) continue;
+    const full = path.join(agentBus, f);
+    let rec;
+    try { rec = JSON.parse(fs.readFileSync(full, "utf8")); } catch { continue; }
+    if (!rec || rec.tool !== toolName || !rec.sessionId) continue;
+    const ts = Date.parse(rec.ts);
+    if (!Number.isFinite(ts) || ts < cutoff) continue;
+    if (!best || ts > best.ts) best = { file: full, ts, sessionId: rec.sessionId, expected: rec.expectedMessage };
+  }
+  if (!best) return null;
+  // Message check guards against a stale sidecar from a previous turn in
+  // the same session (PreToolUse writes happen on each call, but a tool
+  // call can be cancelled before MCP runs). Match on first 80 chars.
+  if (best.expected) {
+    const a = String(message || "").slice(0, 80);
+    const b = String(best.expected).slice(0, 80);
+    if (a && b && a !== b) return null;
+  }
+  try { fs.unlinkSync(best.file); } catch {}
+  return best.sessionId;
+}
+
 function launchTicket(agent, message, run, timeoutMs = null) {
   const id = `t-${randomUUID().slice(0, 8)}`;
   const startedEpoch = Date.now();
-  tickets.set(id, { agent, status: "running", startedTs: new Date(startedEpoch).toISOString(), startedEpoch, timeoutMs, message: String(message).slice(0, 200) });
+  // Bind this ticket to the Claude session that dispatched it (PreToolUse
+  // hook wrote $AGENT_BUS/dispatcher-<id>.json with the matching tool name
+  // + message). The sidecar is consumed once: read + delete, so a second
+  // Claude can't claim it and a stalled sidecar can't leak.
+  const dispatcher = consumeDispatcher(config.agentBus, agent === "opencode" ? "oc_ask_async" : "pi_ask_async", message);
+  tickets.set(id, { agent, status: "running", startedTs: new Date(startedEpoch).toISOString(), startedEpoch, timeoutMs, message: String(message).slice(0, 200), dispatcher });
   run().then(
     (r) => {
       tickets.set(id, { ...tickets.get(id), status: "done" });
       const hint = timeoutMs ? nearCeilingHint(Date.now() - startedEpoch, timeoutMs, agent === "opencode" ? "oc_ask_async" : "pi_ask_async") : null;
+      const baseText = formatAskResult(r) + (hint ? `\n\n${hint}` : "");
       appendMessage(config.agentBus, {
-        text: `Ticket ${id} settled.\n\n${capResult(formatAskResult(r) + (hint ? `\n\n${hint}` : ""), config.agentBus)}`,
+        text: `Ticket ${id} settled.\n\n${capResult(baseText, config.agentBus)}`,
         kind: "result",
         from: agent,
         agent,
         ticket: id,
         session: r.sessionFile || r.sessionId || null,
+        ...(dispatcher ? { to: dispatcher } : {}),
       });
     },
     (err) => {
       tickets.set(id, { ...tickets.get(id), status: "failed" });
+      const failText = `Ticket ${id} failed: ${err.message}`;
       appendMessage(config.agentBus, {
-        text: `Ticket ${id} failed: ${err.message}`,
+        text: failText,
         kind: "warning",
         from: agent,
         agent,
         ticket: id,
+        ...(dispatcher ? { to: dispatcher } : {}),
       });
     }
   );
   return id;
 }
-import path from "node:path";
 
 const config = resolveConfig();
 const pi = new PiSession({
@@ -464,6 +512,8 @@ export async function handleRequest(msg, send) {
 
 
 export { config, pi, oc, tickets, log, TOOLS };
+// Test-only export: dispatcher sidecar consumer.
+export { consumeDispatcher };
 export async function stopWorkers() {
   try { await pi.stop(); } catch {}
   try { await oc.stop(); } catch {}

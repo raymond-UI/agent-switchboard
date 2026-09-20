@@ -77,8 +77,19 @@ try {
   console.log("Fix: add it to PATH (npm prefix -g + /bin), then re-run switchboard-install.");
 }
 
-console.log("Add this Stop hook to your Claude settings (use / forward slashes on Windows):");
-console.log(JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: hook }] }] } }, null, 2));
+console.log("Add these hooks to your Claude settings (use / forward slashes on Windows):");
+const dispatcherHook = isWindows ? "switchboard-dispatcher" : "env -u NODE_OPTIONS switchboard-dispatcher";
+console.log(JSON.stringify({
+  hooks: {
+    PreToolUse: [
+      {
+        matcher: "mcp__switchboard__pi_ask_async|mcp__switchboard__oc_ask_async",
+        hooks: [{ type: "command", command: dispatcherHook }],
+      },
+    ],
+    Stop: [{ hooks: [{ type: "command", command: hook }] }],
+  },
+}, null, 2));
 console.log(`AGENT_BUS=${agentBus} (export/set identically on all sides when directories differ)`);
 console.log("New worker sessions pick up plugin changes; running sessions keep their loaded copy.");
 if (EPHEMERAL) {

@@ -144,3 +144,81 @@ describe("stop hook decision matrix", () => {
     assert.equal(r.stdout.trim(), "");
   });
 });
+
+describe("dispatcher sidecar + session-scoped ticket results", () => {
+  it("consumes the matching sidecar and stamps the ticket dispatcher", async () => {
+    const { consumeDispatcher } = await import("../bridge/app.mjs");
+    const bus = fs.mkdtempSync(path.join(os.tmpdir(), "disp-"));
+    fs.writeFileSync(path.join(bus, "dispatcher-sess-A.json"), JSON.stringify({
+      sessionId: "sess-A", tool: "pi_ask_async",
+      expectedMessage: "do the long task", ts: new Date().toISOString(),
+    }));
+    const got = consumeDispatcher(bus, "pi_ask_async", "do the long task");
+    assert.equal(got, "sess-A");
+    assert.equal(fs.existsSync(path.join(bus, "dispatcher-sess-A.json")), false, "sidecar must be deleted");
+    // Second call: sidecar gone, no binding.
+    assert.equal(consumeDispatcher(bus, "pi_ask_async", "do the long task"), null);
+  });
+
+  it("does not consume a sidecar from a different tool", async () => {
+    const { consumeDispatcher } = await import("../bridge/app.mjs");
+    const bus = fs.mkdtempSync(path.join(os.tmpdir(), "disp-"));
+    fs.writeFileSync(path.join(bus, "dispatcher-sess-A.json"), JSON.stringify({
+      sessionId: "sess-A", tool: "oc_ask_async",
+      expectedMessage: "x", ts: new Date().toISOString(),
+    }));
+    assert.equal(consumeDispatcher(bus, "pi_ask_async", "x"), null);
+    assert.ok(fs.existsSync(path.join(bus, "dispatcher-sess-A.json")), "wrong-tool sidecar preserved");
+  });
+
+  it("does not consume a stale sidecar (>30s old)", async () => {
+    const { consumeDispatcher } = await import("../bridge/app.mjs");
+    const bus = fs.mkdtempSync(path.join(os.tmpdir(), "disp-"));
+    fs.writeFileSync(path.join(bus, "dispatcher-sess-A.json"), JSON.stringify({
+      sessionId: "sess-A", tool: "pi_ask_async",
+      expectedMessage: "x", ts: new Date(Date.now() - 60000).toISOString(),
+    }));
+    assert.equal(consumeDispatcher(bus, "pi_ask_async", "x"), null);
+  });
+
+  it("two Claude sessions share one bus; each ticket routes only to its own", () => {
+    const b = fs.mkdtempSync(path.join(os.tmpdir(), "disp2-"));
+    // Claude-A's worker result (addressed to A).
+    fs.appendFileSync(path.join(b, "to-claude.jsonl"), JSON.stringify({
+      ts: new Date().toISOString(), from: "pi", kind: "result",
+      text: "Ticket t-A settled", session: null, paths: [],
+      ticket: "t-A", to: "sess-A", read: false,
+    }) + "\n");
+    // Claude-B's worker result (addressed to B).
+    fs.appendFileSync(path.join(b, "to-claude.jsonl"), JSON.stringify({
+      ts: new Date().toISOString(), from: "pi", kind: "result",
+      text: "Ticket t-B settled", session: null, paths: [],
+      ticket: "t-B", to: "sess-B", read: false,
+    }) + "\n");
+    // An unstamped ticket (no dispatcher hook ran) — must stay pull-only.
+    fs.appendFileSync(path.join(b, "to-claude.jsonl"), JSON.stringify({
+      ts: new Date().toISOString(), from: "pi", kind: "result",
+      text: "Ticket t-legacy settled", session: null, paths: [],
+      ticket: "t-legacy", read: false,
+    }) + "\n");
+    // A's Stop hook: sees its ticket only.
+    const rA = runHook({ bus: b, payload: { session_id: "sess-A" } });
+    const outA = JSON.parse(rA.stdout);
+    assert.equal(outA.decision, "block");
+    assert.match(outA.reason, /t-A settled/);
+    assert.doesNotMatch(outA.reason, /t-B settled/);
+    assert.doesNotMatch(outA.reason, /t-legacy/);
+    // B's Stop hook: sees its ticket only.
+    const rB = runHook({ bus: b, payload: { session_id: "sess-B" } });
+    const outB = JSON.parse(rB.stdout);
+    assert.equal(outB.decision, "block");
+    assert.match(outB.reason, /t-B settled/);
+    assert.doesNotMatch(outB.reason, /t-A settled/);
+    assert.doesNotMatch(outB.reason, /t-legacy/);
+    // The unstamped ticket is still unread in the bus (pull-only for both).
+    const rest = fs.readFileSync(path.join(b, "to-claude.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const legacy = rest.find((r) => r.ticket === "t-legacy");
+    assert.ok(legacy);
+    assert.equal(legacy.read, false, "unstamped tickets must remain pull-only");
+  });
+});
