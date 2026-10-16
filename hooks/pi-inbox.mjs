@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Stop hook: thin CLI over bridge/hook-core.mjs (shared with the HTTP
 // /inbox endpoint). Node only. Exit 0 silently except block-with-messages.
-// Remote mode: AGENT_BUS_REMOTE=http://host:port asks the bridge instead.
+// Remote mode: AGENT_BUS_REMOTE=http://host:port, or a switchboard-connect
+// pairing (remote.json), asks the worker machine's bridge instead.
 
 import { resolveConfig } from "../bridge/env.mjs";
 import { decideInbox } from "../bridge/hook-core.mjs";
+import { resolveRemote } from "../bridge/remote.mjs";
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -23,9 +25,8 @@ async function remoteDecide(remote, payload) {
   if (typeof timer.unref === "function") timer.unref();
   try {
     const headers = { "Content-Type": "application/json" };
-    const token = process.env.SWITCHBOARD_TOKEN;
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch(remote.replace(/\/$/, "") + "/inbox", {
+    if (remote.token) headers.Authorization = `Bearer ${remote.token}`;
+    const res = await fetch(remote.url + "/inbox", {
       method: "POST",
       headers,
       body: JSON.stringify({ session_id: payload.session_id || payload.sessionId || null }),
@@ -50,7 +51,7 @@ async function main() {
   }
   if (payload.stop_hook_active) process.exit(0);
 
-  const remote = process.env.AGENT_BUS_REMOTE;
+  const remote = resolveRemote();
   if (remote) {
     const ans = await remoteDecide(remote, payload);
     if (ans && ans.type === "block" && ans.reason) {

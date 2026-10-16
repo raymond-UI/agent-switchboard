@@ -9,10 +9,14 @@
 // Sidecar: $AGENT_BUS/dispatcher-<sanitizedSessionId>.json
 //   { sessionId, tool, ts, expectedMessage }
 // Consumed once by the bridge (read + delete). Never read by Claude.
+// Paired with a remote worker (switchboard-connect / AGENT_BUS_REMOTE): the
+// record is POSTed to the worker bridge's /dispatch instead, since the
+// bridge reads sidecars from ITS bus, not ours.
 
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveRemote, firstSet } from "../bridge/remote.mjs";
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -34,41 +38,58 @@ function resolveBus() {
   return process.env.AGENT_BUS || (process.env.CLAUDE_PROJECT_DIR ? path.join(process.env.CLAUDE_PROJECT_DIR, ".agentbus") : path.join(process.cwd(), ".agentbus"));
 }
 
-async function main() {
-  const raw = await readStdin();
-  let payload = {};
-  try { payload = raw.trim() ? JSON.parse(raw) : {}; } catch { process.exit(0); }
+const ASYNC_TOOLS = new Set(["mcp__switchboard__pi_ask_async", "mcp__switchboard__oc_ask_async"]);
 
-  // Only act on the *_ask_async tools; other PreToolUse calls exit silently.
-  const tool = payload.tool_name || "";
-  if (tool !== "mcp__switchboard__pi_ask_async" && tool !== "mcp__switchboard__oc_ask_async") {
-    process.exit(0);
-  }
+function hostname() {
+  try { return os.hostname(); } catch { return null; }
+}
 
-  const sessionId = payload.session_id || payload.sessionId;
-  if (!sessionId) process.exit(0); // no id -> fallback to pull-only (current behavior)
-
-  const bus = resolveBus();
-  try { fs.mkdirSync(bus, { recursive: true }); } catch {}
-
-  // If a sidecar for THIS session already exists, replace it: a single
-  // Claude session should never have two pending async dispatches because
-  // Claude runs tools serially per turn. Replacing keeps the most recent
-  // intent (also handles a PreToolUse+Stop reassembly loop).
-  const file = path.join(bus, `dispatcher-${safeId(sessionId)}.json`);
-  const record = {
-    sessionId: String(sessionId),
-    tool: tool.replace(/^mcp__switchboard__/, ""),
-    expectedMessage: typeof payload.tool_input?.message === "string" ? payload.tool_input.message.slice(0, 4000) : null,
-    host: (() => { try { return os.hostname(); } catch { return null; } })(),
-    pid: process.ppid || process.pid,
+function buildRecord(payload) {
+  const msg = Object(payload.tool_input).message;
+  return {
+    sessionId: String(firstSet(payload.session_id, payload.sessionId)),
+    tool: payload.tool_name.replace(/^mcp__switchboard__/, ""),
+    expectedMessage: typeof msg === "string" ? msg.slice(0, 4000) : null,
+    host: hostname(),
+    pid: firstSet(process.ppid, process.pid),
     ts: new Date().toISOString(),
   };
+}
+
+async function postRemote(remote, record) {
+  const headers = { "Content-Type": "application/json" };
+  if (remote.token) headers.Authorization = `Bearer ${remote.token}`;
   try {
-    fs.writeFileSync(file, JSON.stringify(record, null, 2) + "\n", "utf8");
+    await fetch(remote.url + "/dispatch", { method: "POST", headers, body: JSON.stringify(record), signal: AbortSignal.timeout(3000) });
+  } catch {} // fail open: ticket just stays pull-only
+}
+
+// If a sidecar for THIS session already exists, replace it: a single
+// Claude session should never have two pending async dispatches because
+// Claude runs tools serially per turn. Replacing keeps the most recent
+// intent (also handles a PreToolUse+Stop reassembly loop).
+function writeLocal(record) {
+  const bus = resolveBus();
+  try {
+    fs.mkdirSync(bus, { recursive: true });
+    fs.writeFileSync(path.join(bus, `dispatcher-${safeId(record.sessionId)}.json`), JSON.stringify(record, null, 2) + "\n", "utf8");
   } catch {
     // Fail open: never break Claude on a write error.
   }
+}
+
+function parsePayload(raw) {
+  try { return raw.trim() ? JSON.parse(raw) : {}; } catch { return null; }
+}
+
+async function main() {
+  const payload = parsePayload(await readStdin());
+  // Only act on the *_ask_async tools; no session id -> pull-only fallback.
+  if (!payload || !ASYNC_TOOLS.has(payload.tool_name) || !firstSet(payload.session_id, payload.sessionId)) process.exit(0);
+  const record = buildRecord(payload);
+  const remote = resolveRemote();
+  if (remote) await postRemote(remote, record);
+  else writeLocal(record);
   process.exit(0);
 }
 

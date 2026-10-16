@@ -10,6 +10,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.dirname(HERE);
 const LAUNCHER = path.join(REPO, "bridge", "launcher.mjs");
 const HOOK = path.join(REPO, "hooks", "pi-inbox.mjs");
+const DISPATCH_HOOK = path.join(REPO, "hooks", "pi-dispatcher.mjs");
 const STUB_OC = path.join(REPO, "test", "stub-oc-server.mjs");
 const HTTP_PORT = 4621;
 const OC_PORT = 4622;
@@ -113,5 +114,50 @@ describe("http face (remote Claude)", () => {
     });
     assert.equal(r.status, 0);
     assert.equal(r.stdout.trim(), "");
+  });
+
+  it("initialize tells remote Claude where the workers live", async () => {
+    const init = await (await api("/mcp", { method: "POST", body: { jsonrpc: "2.0", id: 9, method: "initialize", params: {} } })).json();
+    assert.match(init.result.instructions, /remote machine/);
+    assert.match(init.result.instructions, /\/tmp/);
+    const get = await api("/mcp");
+    assert.equal(get.status, 405);
+  });
+
+  it("/info needs the token and reports worker dirs", async () => {
+    assert.equal((await api("/info", { token: "wrong" })).status, 401);
+    const info = await (await api("/info")).json();
+    assert.equal(info.piCwd, "/tmp");
+    assert.ok(info.host);
+  });
+
+  it("paired dispatcher hook POSTs /dispatch and the sidecar lands on the worker bus", async () => {
+    const cfg = fs.mkdtempSync(path.join(os.tmpdir(), "sbcfg-"));
+    fs.writeFileSync(path.join(cfg, "remote.json"), JSON.stringify({ url: `http://127.0.0.1:${HTTP_PORT}`, token: TOKEN }));
+    const localBus = fs.mkdtempSync(path.join(os.tmpdir(), "localbus-"));
+    const r = spawnSync(process.execPath, [DISPATCH_HOOK], {
+      input: JSON.stringify({ session_id: "laptop-1", tool_name: "mcp__switchboard__pi_ask_async", tool_input: { message: "do x" } }),
+      encoding: "utf8",
+      env: { ...process.env, SWITCHBOARD_CONFIG_DIR: cfg, AGENT_BUS: localBus, AGENT_BUS_REMOTE: "", SWITCHBOARD_TOKEN: "" },
+    });
+    assert.equal(r.status, 0);
+    const side = JSON.parse(fs.readFileSync(path.join(bus, "dispatcher-laptop-1.json"), "utf8"));
+    assert.equal(side.sessionId, "laptop-1");
+    assert.equal(side.tool, "pi_ask_async");
+    assert.equal(side.expectedMessage, "do x");
+    assert.deepEqual(fs.readdirSync(localBus), []);
+  });
+
+  it("paired Stop hook drains remotely with no env (reads remote.json)", async () => {
+    const cfg = fs.mkdtempSync(path.join(os.tmpdir(), "sbcfg-"));
+    fs.writeFileSync(path.join(cfg, "remote.json"), JSON.stringify({ url: `http://127.0.0.1:${HTTP_PORT}`, token: TOKEN }));
+    const { appendMessage } = await import("../bridge/bus.mjs");
+    appendMessage(bus, { text: "paired hello", kind: "fyi", from: "pi" });
+    const r = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ session_id: "remote-2" }),
+      encoding: "utf8",
+      env: { ...process.env, SWITCHBOARD_CONFIG_DIR: cfg, AGENT_BUS_REMOTE: "", SWITCHBOARD_TOKEN: "" },
+    });
+    assert.match(JSON.parse(r.stdout).reason, /paired hello/);
   });
 });

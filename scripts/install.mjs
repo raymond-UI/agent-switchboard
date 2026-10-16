@@ -4,11 +4,11 @@
 // prints the Stop-hook JSON. Idempotent; never touches running sessions.
 
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadRemote } from "../bridge/remote.mjs";
 
 const HERE = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // npx runs from a cache dir the package manager may prune at any time. The
@@ -53,7 +53,12 @@ try {
   execFileSync("claude", ["--version"], { stdio: "ignore" });
   hasClaude = true;
 } catch {}
-if (hasClaude) {
+// Paired coordinator: keep the remote registration; a re-install (upgrade)
+// must not silently swap Claude back to local workers.
+const paired = loadRemote();
+if (paired) {
+  console.log(`Paired with remote worker ${paired.host} (${paired.url}); MCP registration left as-is. Unpair: switchboard-connect --local`);
+} else if (hasClaude) {
   try {
     execFileSync("claude", ["mcp", "remove", "switchboard", "-s", "user"], { stdio: "ignore" });
   } catch {}
@@ -100,13 +105,6 @@ if (EPHEMERAL) {
   console.log("then re-run: switchboard-install");
 }
 
-// Remote Claude (cross-machine): mint a bearer token and print the client
-// config. The bridge serves it with `node bridge/launcher.mjs serve --port <p>`
-// (SWITCHBOARD_TOKEN set). Single-machine stdio stays the default.
-const token = randomBytes(24).toString("hex");
 console.log("");
-console.log("Remote Claude (optional, LAN): serve the bridge, then connect:");
-console.log(`  SWITCHBOARD_TOKEN=${token} switchboard-serve --port 4598`);
-console.log("  claude mcp add --transport http switchboard-remote http://<this-host>:4598/mcp --header \"Authorization: Bearer " + token + "\"");
-console.log("  Hook: AGENT_BUS_REMOTE=http://<this-host>:4598 " + (isWindows ? "switchboard-inbox" : "env -u NODE_OPTIONS switchboard-inbox"));
-console.log("  (bind LAN via SWITCHBOARD_HOST; Tailscale outside the LAN; token shown once, keep it secret)");
+console.log("Cross-machine (optional): run `switchboard-pair` on the worker machine, then the");
+console.log("`switchboard-connect <code>` it prints on the coordinator. Same hooks either way.");

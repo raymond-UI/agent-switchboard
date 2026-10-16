@@ -437,6 +437,8 @@ async function handleToolCall(name, args) {
 
 
 let initialized = false;
+let instructions = null;
+export function setInstructions(text) { instructions = text; }
 export async function handleRequest(msg, send) {
   // Notifications (no id): no response.
   const isNotif = msg.id === undefined || msg.id === null;
@@ -450,6 +452,7 @@ export async function handleRequest(msg, send) {
           protocolVersion: version,
           capabilities: { tools: {} },
           serverInfo: { name: "switchboard", version: "0.1.0" },
+          ...(instructions ? { instructions } : {}),
         },
       };
       initialized = true;

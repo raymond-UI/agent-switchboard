@@ -61,23 +61,34 @@ announced at the top of this section.
 
 Tested: pi 0.85.0, OpenCode 1.18.30, Node 20/22/24 (CI × ubuntu/macos/windows).
 
-## Across machines (remote Claude)
+## Across machines (worker box)
 
-The bridge can serve the same tools over HTTP so a Claude on another LAN
-machine drives local workers. Single-machine stdio stays the default.
-
-On the worker machine, get a token plus client config from the installer
-(`node scripts/install.mjs`), then serve:
+Run pi and OpenCode on a second machine so the coordinator (your laptop
+running Claude) stays light. Install switchboard on both (path B above),
+then:
 
 ```bash
-SWITCHBOARD_TOKEN=<token> switchboard-serve --port 4598
+switchboard-pair                 # 1. on the WORKER: prints a code, starts serving
+switchboard-connect sb1.…        # 2. on the COORDINATOR: paste that code
 ```
 
-On the laptop: `claude mcp add --transport http switchboard-remote
-http://<host>:4598/mcp --header "Authorization: Bearer <token>"`, and point
-the Stop hook at the bridge (`AGENT_BUS_REMOTE=http://<host>:4598`).
-Transports, tickets, claims and presence are unchanged — only Claude's link
-go remote. Bind LAN via `SWITCHBOARD_HOST`; Tailscale outside the LAN.
+Restart Claude on the coordinator and you're done. It uses the same tools
+and the same hook snippet, and async results still reach the session that
+started them. Claude is told which machine the workers are on. **Paths you give
+workers refer to the worker machine** (`switchboard-connect --status` shows
+their working dirs).
+
+Notes: the code contains the access token (`switchboard-pair --rotate`
+revokes it). Both machines need to be on the same LAN, or use Tailscale
+from anywhere. Undo with `switchboard-connect --local`.
+
+**Always-on worker:** `switchboard-pair --service` instead of step 1. It
+installs a background service (launchd on macOS, systemd user unit on
+Linux) that starts at login and restarts if it crashes, and prints the same code.
+Run it from the project dir (or set `PI_CWD`/`OC_CWD`). It captures your PATH
+and model settings but not provider API keys. Re-run after changing them.
+Remove: `switchboard-pair --remove-service`. Windows: keep `switchboard-pair`
+open in a terminal.
 Full diagram: `docs/network-vision.html`.
 
 Two agents, one checkout: give each its own worktree
@@ -140,11 +151,13 @@ Full table in code: `bridge/env.mjs`, `bridge/oc-session.mjs`.
 **Layout:** `bridge/` (env, bus, format, MCP server, `pi-session`,
 `oc-session`, `launcher`), `hooks/pi-inbox.mjs` (Stop hook),
 `pi-extensions/`, `opencode-plugin/`, `test/` (stubs + `node:test` suites),
-`scripts/` (installer, worktree setup). Original design doc:
+`scripts/` (installer, pair/connect, worktree setup). Original design doc:
 `PRD-agent-switchboard.md`.
 
 **Security:** localhost only (bridge servers bind `127.0.0.1` with per-spawn
-passwords; MCP is stdio, no auth by design). Don't weaken silently — see
+passwords; MCP is stdio, no auth by design). The one exception is
+`switchboard-pair`, which you run on purpose: it binds the network and
+requires the token. It refuses to bind the network without one. Don't weaken silently — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## For contributors

@@ -3,15 +3,20 @@
 // Streamable-HTTP-style JSON-RPC plus a hook-drain endpoint, so a Claude on
 // another LAN machine can drive local workers. Single-machine stdio stays
 // the default; this is opt-in: `node bridge/launcher.mjs serve --port 4598`.
-// Auth: SWITCHBOARD_TOKEN env -> required `Authorization: Bearer` (fail
-// closed when set). Bind: SWITCHBOARD_HOST (default 127.0.0.1).
+// Auth: SWITCHBOARD_TOKEN env, else the paired worker.json token ->
+// required `Authorization: Bearer`. Bind: SWITCHBOARD_HOST (default
+// 127.0.0.1); a non-loopback bind without a token refuses to start.
 
+import fs from "node:fs";
 import http from "node:http";
-import { config, pi, oc, log, handleRequest, stopWorkers } from "./app.mjs";
+import os from "node:os";
+import path from "node:path";
+import { config, pi, oc, log, handleRequest, stopWorkers, setInstructions } from "./app.mjs";
 import { decideInbox } from "./hook-core.mjs";
+import { loadWorker } from "./remote.mjs";
 
-const token = process.env.SWITCHBOARD_TOKEN || null;
-const host = process.env.SWITCHBOARD_HOST || "127.0.0.1";
+const token = process.env.SWITCHBOARD_TOKEN || loadWorker()?.token || null;
+let host = process.env.SWITCHBOARD_HOST || "127.0.0.1";
 let port = parseInt(process.env.SWITCHBOARD_PORT || "4598", 10);
 // Accept both `node http-server.mjs --port 1` and `node launcher.mjs serve --port 1`.
 const argv = process.argv.slice(2).filter((a) => !["serve", "mcp", "hook"].includes(a));
@@ -23,6 +28,24 @@ for (let i = 0; i < argv.length; i++) {
   const hm = a.match(/^--host=([\w.\-]+)$/);
   if (a === "--host" && argv[i + 1]) host = argv[++i];
   else if (hm) host = hm[1];
+}
+
+if (!token && !["127.0.0.1", "localhost", "::1"].includes(host)) {
+  log(`[switchboard] refusing to bind ${host} without a token: run switchboard-pair (or set SWITCHBOARD_TOKEN)`);
+  process.exit(2);
+}
+
+// Remote Claude sees its own disk, not this one. Say so in the MCP
+// handshake so paths in instructions target the worker machine.
+const hostname = os.hostname();
+setInstructions(
+  `Workers run on remote machine "${hostname}", not on your machine. ` +
+  `Files you edit locally are invisible to them. Use absolute paths on ${hostname}: ` +
+  `pi cwd ${config.piCwd}, OpenCode cwd ${oc.ocCwd}.`
+);
+
+function safeId(s) {
+  return String(s || "").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 200) || "unknown";
 }
 
 function authorized(req) {
@@ -59,6 +82,31 @@ const server = http.createServer(async (req, res) => {
 
   if (!authorized(req)) {
     return sendJson(401, { error: "unauthorized: set Authorization: Bearer $SWITCHBOARD_TOKEN" });
+  }
+
+  if (url.pathname === "/info" && req.method === "GET") {
+    return sendJson(200, { host: hostname, piCwd: config.piCwd, ocCwd: oc.ocCwd, agentBus: config.agentBus });
+  }
+
+  // Remote PreToolUse dispatcher hook: same sidecar the local hook writes,
+  // just delivered over HTTP so async results route back across machines.
+  if (url.pathname === "/dispatch" && req.method === "POST") {
+    try {
+      const rec = JSON.parse(await readBody(req));
+      if (!rec?.sessionId || !/^(pi|oc)_ask_async$/.test(rec.tool || "")) return sendJson(400, { error: "need sessionId + tool" });
+      fs.mkdirSync(config.agentBus, { recursive: true });
+      const out = { ...rec, ts: new Date().toISOString(), via: "http" };
+      fs.writeFileSync(path.join(config.agentBus, `dispatcher-${safeId(rec.sessionId)}.json`), JSON.stringify(out, null, 2) + "\n", "utf8");
+      return sendJson(200, { ok: true });
+    } catch (err) {
+      return sendJson(400, { error: String(err.message || err) });
+    }
+  }
+
+  // Streamable HTTP: no server-initiated SSE stream; 405 tells clients so.
+  if (url.pathname === "/mcp" && req.method === "GET") {
+    res.writeHead(405, { Allow: "POST" });
+    return res.end();
   }
 
   if (url.pathname === "/mcp" && req.method === "POST") {
@@ -102,7 +150,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  return sendJson(404, { error: "unknown route (POST /mcp, POST|GET /inbox, GET /health)" });
+  return sendJson(404, { error: "unknown route (POST /mcp, POST|GET /inbox, POST /dispatch, GET /info, GET /health)" });
 });
 
 server.listen(port, host, () => {

@@ -9,7 +9,9 @@
     "switchboard-inbox": "./hooks/pi-inbox.mjs",
     "switchboard-dispatcher": "./hooks/pi-dispatcher.mjs",
     "switchboard-install": "./scripts/install.mjs",
-    "switchboard-serve": "./bridge/http-server.mjs"
+    "switchboard-serve": "./bridge/http-server.mjs",
+    "switchboard-pair": "./scripts/pair.mjs",
+    "switchboard-connect": "./scripts/connect.mjs"
   },
   "scripts": {
     "test": "node --test test/*.test.mjs"
