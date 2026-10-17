@@ -1,3 +1,4 @@
+import "./isolate.mjs";
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";

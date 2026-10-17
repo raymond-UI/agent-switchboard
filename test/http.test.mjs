@@ -1,3 +1,4 @@
+import "./isolate.mjs";
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -159,5 +160,35 @@ describe("http face (remote Claude)", () => {
       env: { ...process.env, SWITCHBOARD_CONFIG_DIR: cfg, AGENT_BUS_REMOTE: "", SWITCHBOARD_TOKEN: "" },
     });
     assert.match(JSON.parse(r.stdout).reason, /paired hello/);
+  });
+
+  it("a malformed request gets 400 and the server stays up", async () => {
+    const net = await import("node:net");
+    const reply = await new Promise((resolve) => {
+      const s = net.connect(HTTP_PORT, "127.0.0.1", () => s.end("GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n"));
+      let buf = "";
+      s.on("data", (c) => (buf += c));
+      s.on("close", () => resolve(buf));
+      s.on("error", () => resolve(buf));
+    });
+    assert.match(reply, /^HTTP\/1\.1 400/);
+    assert.equal((await api("/health", { token: null })).status, 200);
+  });
+
+  it("phone UI page is public; overview needs the token and never marks read", async () => {
+    const page = await fetch(`http://127.0.0.1:${HTTP_PORT}/`);
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get("content-type"), /text\/html/);
+    assert.match(page.headers.get("content-security-policy"), /frame-ancestors 'none'/);
+    assert.equal(page.headers.get("x-frame-options"), "DENY");
+    assert.match(await page.text(), /Switchboard/);
+    assert.equal((await api("/api/overview", { token: null })).status, 401);
+    const { appendMessage, readUnread } = await import("../bridge/bus.mjs");
+    appendMessage(bus, { text: "phone sees this", kind: "fyi", from: "pi" });
+    const o = await (await api("/api/overview")).json();
+    assert.equal(o.piCwd, "/tmp");
+    assert.ok(Array.isArray(o.tickets));
+    assert.equal(o.feed[0].text, "phone sees this");
+    assert.ok(readUnread(bus).some((r) => r.text === "phone sees this"));
   });
 });

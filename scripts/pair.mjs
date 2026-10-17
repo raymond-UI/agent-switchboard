@@ -13,6 +13,25 @@
 import { ensureWorker, loadWorker, encodeCode, candidateHosts } from "../bridge/remote.mjs";
 import { installService, removeService, serviceInstalled } from "./service.mjs";
 
+// Does whatever listens on the port accept OUR token? Catches the silent
+// failure where a stale server (old token) holds the port and the
+// coordinator gets 401 with a perfectly fresh code.
+async function selfCheck(port, token) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/info`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(2000) });
+    return res.status === 200 ? "ok" : res.status === 401 ? "stale" : `http ${res.status}`;
+  } catch {
+    return "down";
+  }
+}
+
+function reportCheck(state, port) {
+  if (state === "ok") return console.log(`Self-check: service on port ${port} accepts this code.`);
+  if (state === "down") return console.log(`Self-check: nothing answering on port ${port} yet.`);
+  console.log(`Self-check FAILED: the process on port ${port} rejects this code (${state}); an old server holds the port.`);
+  console.log(`Find it: lsof -nP -iTCP:${port} -sTCP:LISTEN  then kill it and re-run switchboard-pair --service`);
+}
+
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
 
@@ -36,6 +55,7 @@ if (!flag("--quiet")) {
   console.log(`  switchboard-connect ${encodeCode({ urls, token })}`);
   console.log("");
   console.log(`Advertised: ${urls.join(", ")}`);
+  console.log(`Phone (same network or Tailscale): ${urls[0]}/#t=${token}`);
   console.log(`Workers run in: pi ${process.env.PI_CWD || process.cwd()}, OpenCode ${process.env.OC_CWD || process.env.PI_CWD || process.cwd()} (set PI_CWD / OC_CWD, or run this from the project dir)`);
   console.log("The code contains the access token; treat it like a password. Rotate: switchboard-pair --rotate");
   console.log("");
@@ -49,6 +69,8 @@ if (flag("--service")) {
     console.log("Starts at login, restarts on crash. Changed PI_CWD/model/env? Re-run switchboard-pair --service.");
     if (process.platform === "darwin") console.log("Idle sleep is blocked while it runs; lid-close/manual sleep still pauses it.");
     if (process.platform === "linux") console.log("Headless box (no login)? Run once: sudo loginctl enable-linger $USER");
+    await new Promise((r) => setTimeout(r, 2500));
+    reportCheck(await selfCheck(port, token), port);
     console.log("Provider API keys from your shell env are NOT copied; pi/OpenCode logins work as-is.");
   } catch (err) {
     console.error(`Could not install the service: ${err.message}`);
@@ -57,7 +79,10 @@ if (flag("--service")) {
   process.exit(0);
 }
 
-if (flag("--print")) process.exit(0);
+if (flag("--print")) {
+  reportCheck(await selfCheck(port, token), port);
+  process.exit(0);
+}
 
 if (!flag("--quiet") && serviceInstalled()) {
   console.log("Note: a background worker is installed; if it's running, this port is taken. Stop it: switchboard-pair --remove-service");

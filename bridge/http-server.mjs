@@ -11,9 +11,12 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { config, pi, oc, log, handleRequest, stopWorkers, setInstructions } from "./app.mjs";
+import { fileURLToPath } from "node:url";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { config, oc, tickets, log, handleRequest, stopWorkers, setInstructions } from "./app.mjs";
+import { readAll } from "./bus.mjs";
 import { decideInbox } from "./hook-core.mjs";
-import { loadWorker } from "./remote.mjs";
+import { loadWorker, firstSet } from "./remote.mjs";
 
 const token = process.env.SWITCHBOARD_TOKEN || loadWorker()?.token || null;
 let host = process.env.SWITCHBOARD_HOST || "127.0.0.1";
@@ -50,8 +53,10 @@ function safeId(s) {
 
 function authorized(req) {
   if (!token) return true; // localhost default; set a token for LAN use
-  const h = req.headers.authorization || "";
-  return h === `Bearer ${token}`;
+  // Constant-time compare: response timing mustn't reveal a token prefix.
+  const got = Buffer.from(String(req.headers.authorization));
+  const want = Buffer.from(`Bearer ${token}`);
+  return got.length === want.length && timingSafeEqual(got, want);
 }
 
 function readBody(req) {
@@ -69,88 +74,150 @@ function readBody(req) {
   });
 }
 
+const sendJson = (res, code, obj) => {
+  res.writeHead(code, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(obj));
+};
+
+async function readJson(req) {
+  const raw = await readBody(req);
+  return raw ? JSON.parse(raw) : {};
+}
+
+// Phone UI: one static page; it holds no secrets (token lives in the
+// phone's localStorage and rides as a Bearer header like every client).
+const UI_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), "ui.html");
+
+// CSP: only the page's own inline script (pinned by hash, so injected
+// markup can't run code), API calls to this origin only, and no framing
+// (another site can't overlay the logged-in page to steal taps).
+function uiPolicy(html) {
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
+  const hash = createHash("sha256").update(script).digest("base64");
+  return `default-src 'none'; script-src 'sha256-${hash}'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+}
+
+function serveUi(req, res) {
+  let html;
+  try { html = fs.readFileSync(UI_FILE, "utf8"); } catch { return sendJson(res, 500, { error: "ui.html missing" }); }
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": uiPolicy(html),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(html);
+}
+
+const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id, error: { code, message } });
+
+// Single or batch (array) JSON-RPC, mirroring the stdio surface.
+async function runRpc(msg) {
+  const collect = [];
+  for (const m of [msg].flat()) await handleRequest(m, (obj) => collect.push(obj));
+  if (Array.isArray(msg)) return [200, collect];
+  return collect.length ? [200, collect[0]] : [202, {}];
+}
+
+async function handleMcp(req, res) {
+  const msg = await readJson(req).catch(() => undefined);
+  if (msg === undefined) return sendJson(res, 400, rpcError(null, -32700, "parse error"));
+  try {
+    const [code, body] = await runRpc(msg);
+    return sendJson(res, code, body);
+  } catch (err) {
+    return sendJson(res, 500, rpcError(Object(msg).id ?? null, -32603, String(err.message)));
+  }
+}
+
+async function inboxSession(req, url) {
+  const body = req.method === "POST" ? await readJson(req).catch(() => ({})) : {};
+  return firstSet(body.session_id, body.sessionId, url.searchParams.get("session"));
+}
+
+async function handleInbox(req, res, url) {
+  const sessionId = await inboxSession(req, url);
+  try {
+    const ans = decideInbox(config.agentBus, { session_id: sessionId }, { maxConsecutiveBlocks: config.maxConsecutiveBlocks });
+    return sendJson(res, 200, ans.type === "block" ? { type: "block", reason: ans.reason } : { type: "silent" });
+  } catch {
+    return sendJson(res, 200, { type: "silent" }); // fail-open, like the hook
+  }
+}
+
+// Remote PreToolUse dispatcher hook: same sidecar the local hook writes,
+// just delivered over HTTP so async results route back across machines.
+const validDispatch = (rec) => Boolean(rec.sessionId) && /^(pi|oc)_ask_async$/.test(String(rec.tool));
+
+async function handleDispatch(req, res) {
+  try {
+    const rec = Object(await readJson(req));
+    if (!validDispatch(rec)) return sendJson(res, 400, { error: "need sessionId + tool" });
+    fs.mkdirSync(config.agentBus, { recursive: true });
+    const out = { ...rec, ts: new Date().toISOString(), via: "http" };
+    fs.writeFileSync(path.join(config.agentBus, `dispatcher-${safeId(rec.sessionId)}.json`), JSON.stringify(out, null, 2) + "\n", "utf8");
+    return sendJson(res, 200, { ok: true });
+  } catch (err) {
+    return sendJson(res, 400, { error: String(err.message) });
+  }
+}
+
+// Phone UI snapshot. Read-only on the bus: never marks records read, so the
+// coordinator's Claude still receives everything the phone has seen.
+function handleOverview(req, res) {
+  const list = [...tickets.entries()].map(([id, t]) => ({ id, agent: t.agent, status: t.status, startedTs: t.startedTs, message: t.message }));
+  const feed = readAll(config.agentBus).slice(-60).reverse().map((r) => ({
+    ts: r.ts, from: r.from, agent: r.agent, kind: r.kind, ticket: r.ticket, text: String(r.text ?? "").slice(0, 20000),
+  }));
+  return sendJson(res, 200, { host: hostname, piCwd: config.piCwd, ocCwd: oc.ocCwd, tickets: list.reverse(), feed });
+}
+
+function handleInfo(req, res) {
+  return sendJson(res, 200, { host: hostname, piCwd: config.piCwd, ocCwd: oc.ocCwd, agentBus: config.agentBus });
+}
+
+// Streamable HTTP: no server-initiated SSE stream; 405 tells clients so.
+function mcpGet(req, res) {
+  res.writeHead(405, { Allow: "POST" });
+  res.end();
+}
+
+const PUBLIC = {
+  "GET /": serveUi,
+  "GET /health": (req, res) => sendJson(res, 200, { healthy: true, name: "switchboard", version: "0.1.0" }),
+};
+const PRIVATE = {
+  "GET /info": handleInfo,
+  "GET /api/overview": handleOverview,
+  "POST /dispatch": handleDispatch,
+  "GET /mcp": mcpGet,
+  "POST /mcp": handleMcp,
+  "GET /inbox": handleInbox,
+  "POST /inbox": handleInbox,
+};
+
+async function route(req, res, url) {
+  const key = `${req.method} ${url.pathname}`;
+  if (PUBLIC[key]) return PUBLIC[key](req, res, url);
+  if (!authorized(req)) return sendJson(res, 401, { error: "unauthorized: set Authorization: Bearer $SWITCHBOARD_TOKEN" });
+  if (PRIVATE[key]) return PRIVATE[key](req, res, url);
+  return sendJson(res, 404, { error: "unknown route (GET /, POST /mcp, POST|GET /inbox, POST /dispatch, GET /info, GET /api/overview, GET /health)" });
+}
+
+// One bad request (unparseable URL, a throwing handler) must never take the
+// worker down: it's reachable on the network before any auth check.
+function fail(res, code, err) {
+  log(`[switchboard] ${code}: ${err.message}`);
+  if (!res.headersSent) sendJson(res, code, { error: code === 400 ? "bad request" : "internal error" });
+  else res.end();
+}
+
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, "http://x");
-  const sendJson = (code, obj) => {
-    res.writeHead(code, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(obj));
-  };
-
-  if (url.pathname === "/health" && req.method === "GET") {
-    return sendJson(200, { healthy: true, name: "switchboard", version: "0.1.0" });
-  }
-
-  if (!authorized(req)) {
-    return sendJson(401, { error: "unauthorized: set Authorization: Bearer $SWITCHBOARD_TOKEN" });
-  }
-
-  if (url.pathname === "/info" && req.method === "GET") {
-    return sendJson(200, { host: hostname, piCwd: config.piCwd, ocCwd: oc.ocCwd, agentBus: config.agentBus });
-  }
-
-  // Remote PreToolUse dispatcher hook: same sidecar the local hook writes,
-  // just delivered over HTTP so async results route back across machines.
-  if (url.pathname === "/dispatch" && req.method === "POST") {
-    try {
-      const rec = JSON.parse(await readBody(req));
-      if (!rec?.sessionId || !/^(pi|oc)_ask_async$/.test(rec.tool || "")) return sendJson(400, { error: "need sessionId + tool" });
-      fs.mkdirSync(config.agentBus, { recursive: true });
-      const out = { ...rec, ts: new Date().toISOString(), via: "http" };
-      fs.writeFileSync(path.join(config.agentBus, `dispatcher-${safeId(rec.sessionId)}.json`), JSON.stringify(out, null, 2) + "\n", "utf8");
-      return sendJson(200, { ok: true });
-    } catch (err) {
-      return sendJson(400, { error: String(err.message || err) });
-    }
-  }
-
-  // Streamable HTTP: no server-initiated SSE stream; 405 tells clients so.
-  if (url.pathname === "/mcp" && req.method === "GET") {
-    res.writeHead(405, { Allow: "POST" });
-    return res.end();
-  }
-
-  if (url.pathname === "/mcp" && req.method === "POST") {
-    let msg;
-    try {
-      msg = JSON.parse(await readBody(req));
-    } catch {
-      return sendJson(400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
-    }
-    try {
-      // Single or batch (array) JSON-RPC, mirroring the stdio surface.
-      const collect = [];
-      const send = (obj) => collect.push(obj);
-      if (Array.isArray(msg)) {
-        for (const m of msg) await handleRequest(m, send);
-        return sendJson(200, collect);
-      }
-      await handleRequest(msg, send);
-      if (!collect.length) return sendJson(202, {});
-      return sendJson(200, collect[0]);
-    } catch (err) {
-      return sendJson(500, { jsonrpc: "2.0", id: msg?.id ?? null, error: { code: -32603, message: String(err.message || err) } });
-    }
-  }
-
-  if (url.pathname === "/inbox" && (req.method === "POST" || req.method === "GET")) {
-    let sessionId = url.searchParams.get("session");
-    if (req.method === "POST") {
-      try {
-        const body = JSON.parse((await readBody(req)) || "{}");
-        sessionId = body.session_id || body.sessionId || sessionId;
-      } catch {}
-    }
-    try {
-      const ans = decideInbox(config.agentBus, { session_id: sessionId }, {
-        maxConsecutiveBlocks: config.maxConsecutiveBlocks,
-      });
-      return sendJson(200, ans.type === "block" ? { type: "block", reason: ans.reason } : { type: "silent" });
-    } catch (err) {
-      return sendJson(200, { type: "silent" }); // fail-open, like the hook
-    }
-  }
-
-  return sendJson(404, { error: "unknown route (POST /mcp, POST|GET /inbox, POST /dispatch, GET /info, GET /health)" });
+  let url;
+  try { url = new URL(req.url, "http://x"); } catch (err) { return fail(res, 400, err); }
+  try { await route(req, res, url); } catch (err) { fail(res, 500, err); }
 });
 
 server.listen(port, host, () => {

@@ -89,6 +89,11 @@ Run it from the project dir (or set `PI_CWD`/`OC_CWD`). It captures your PATH
 and model settings but not provider API keys. Re-run after changing them.
 Remove: `switchboard-pair --remove-service`. Windows: keep `switchboard-pair`
 open in a terminal.
+
+**From your phone:** `switchboard-pair` also prints a `Phone` link. Open it
+on a phone on the same network (or Tailscale) to get a chat page for pi and
+OpenCode: send tasks, watch them run, nudge or stop them, read replies and
+cost. The link logs the phone in; treat it like the code.
 Full diagram: `docs/network-vision.html`.
 
 Two agents, one checkout: give each its own worktree
@@ -157,7 +162,10 @@ Full table in code: `bridge/env.mjs`, `bridge/oc-session.mjs`.
 **Security:** localhost only (bridge servers bind `127.0.0.1` with per-spawn
 passwords; MCP is stdio, no auth by design). The one exception is
 `switchboard-pair`, which you run on purpose: it binds the network and
-requires the token. It refuses to bind the network without one. Don't weaken silently — see
+requires the token. It refuses to bind the network without one. Traffic is
+plain HTTP: over Tailscale it's encrypted, but on shared Wi-Fi the token and
+your messages are readable, so prefer the Tailscale address (listed first).
+Don't weaken silently — see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## For contributors

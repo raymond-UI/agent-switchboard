@@ -62,6 +62,7 @@ try {
 
 // First address that answers /health AND accepts the token wins.
 let chosen = null;
+let rejected = false;
 const tried = [];
 for (const url of pair.urls) {
   try {
@@ -70,8 +71,15 @@ for (const url of pair.urls) {
     chosen = { url, info };
     break;
   } catch (err) {
+    rejected ||= err.message === "HTTP 401";
     tried.push(`${url} (${err.name === "TimeoutError" ? "no answer" : err.message})`);
   }
+}
+if (!chosen && rejected) {
+  console.error("Reached the worker, but it rejected this code's token. Tried:\n  " + tried.join("\n  "));
+  console.error("The code is stale, or an old process holds the port. On the worker run: switchboard-pair --print");
+  console.error("It checks the running service and prints the current code.");
+  process.exit(1);
 }
 if (!chosen) {
   console.error("Could not reach the worker. Tried:\n  " + tried.join("\n  "));
